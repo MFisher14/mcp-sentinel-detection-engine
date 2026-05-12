@@ -90,7 +90,7 @@ jobs:
       #     to the cache dir, i.e. an attacker who already has local code
       #     execution on the host running the server. Tracked for v0.2.
       - name: pip-audit (fail on any reported vulnerability)
-        uses: pypa/gh-action-pip-audit@d499194be74aeb3bc7dbed3a224a87e1831132c7  # v1.0.8
+        uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266  # v1.1.0
         with:
           virtual-environment: ".venv"
           vulnerability-service: "osv"

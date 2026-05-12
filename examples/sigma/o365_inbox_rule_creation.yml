@@ -1,0 +1,37 @@
+title: Suspicious Exchange Online Inbox Rule Creation
+id: 237887de-b395-4c2c-a9d9-8276b0e656cb
+status: experimental
+description: >
+  Detect creation of an Exchange Online inbox rule (New-InboxRule) whose
+  parameters are characteristic of post-compromise mailbox manipulation:
+  auto-forwarding to an external address, blanket deletion of new messages,
+  or moving inbound mail into a low-visibility folder such as "RSS Feeds"
+  or "Archive". Frequently observed after a successful business-email-
+  compromise sign-in.
+references:
+  - https://attack.mitre.org/techniques/T1114/003/
+  - https://attack.mitre.org/techniques/T1564/008/
+author: Maximus Fisher
+date: 2026-05-12
+tags:
+  - attack.collection
+  - attack.defense-evasion
+  - attack.t1114.003
+  - attack.t1564.008
+logsource:
+  product: m365
+  service: exchange
+detection:
+  selection_op:
+    Operation: 'New-InboxRule'
+  selection_params:
+    Parameters|contains:
+      - 'ForwardTo'
+      - 'DeleteMessage'
+      - 'MoveToFolder'
+  condition: selection_op and selection_params
+falsepositives:
+  - Power users who legitimately route newsletters to the RSS Feeds folder.
+  - Migrations that script bulk inbox-rule creation via PowerShell against
+    pre-staged mailboxes.
+level: high

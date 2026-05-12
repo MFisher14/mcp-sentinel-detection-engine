@@ -1,0 +1,30 @@
+title: Entra ID Sign-in with High Risk Level
+id: cbfabc7d-0647-4c7b-a144-3d10f9f11ea0
+status: experimental
+description: >
+  Detect Microsoft Entra ID (Azure AD) interactive sign-ins where Identity
+  Protection has flagged the session with risk level "high" during the
+  sign-in. These often correlate with leaked credentials, password spray,
+  or sign-ins from anonymous proxies. Pair with conditional-access policy
+  review.
+references:
+  - https://attack.mitre.org/techniques/T1078/004/
+  - https://attack.mitre.org/techniques/T1110/003/
+author: Maximus Fisher
+date: 2026-05-12
+tags:
+  - attack.initial-access
+  - attack.t1078.004
+  - attack.t1110.003
+logsource:
+  product: azure
+  service: signinlogs
+detection:
+  selection:
+    RiskLevelDuringSignIn: high
+  condition: selection
+falsepositives:
+  - Penetration testers exercising the tenant from declared infrastructure.
+  - Travel scenarios where the user has not yet been added to the named
+    locations list.
+level: high

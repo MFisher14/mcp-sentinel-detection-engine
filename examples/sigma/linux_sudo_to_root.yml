@@ -1,0 +1,33 @@
+title: Linux sudo Escalation to Root
+id: 1013f768-e9eb-44e3-af90-e1bea4276317
+status: experimental
+description: >
+  Detect any sudo invocation that escalates to UID 0 (root) on a Linux
+  host. The signal alone is noisy in admin-heavy environments; this rule
+  is intended as a starting point that downstream stages narrow by
+  user/host allowlist or unusual command (USER=root + COMMAND not on
+  the allowlist).
+references:
+  - https://attack.mitre.org/techniques/T1548/003/
+  - https://attack.mitre.org/techniques/T1078/003/
+author: Maximus Fisher
+date: 2026-05-12
+tags:
+  - attack.privilege-escalation
+  - attack.t1548.003
+  - attack.t1078.003
+logsource:
+  product: linux
+  service: syslog
+detection:
+  selection:
+    SyslogMessage|contains: 'sudo:'
+    SyslogMessage|contains|all:
+      - 'USER=root'
+      - 'COMMAND='
+  condition: selection
+falsepositives:
+  - Scheduled configuration-management runs (Ansible, Salt, Chef) that
+    legitimately escalate to root.
+  - Operator shells during incident response.
+level: low

@@ -70,7 +70,10 @@ jobs:
       - name: Set up Python 3.12 and install project
         run: |
           uv python install 3.12
-          uv venv --python 3.12
+          # --seed gives the venv its own pip/setuptools/wheel; the
+          # pip-audit action shells out to `python -m pip` inside the
+          # venv, which fails without it.
+          uv venv --seed --python 3.12
           uv pip install -e ".[dev]"
 
       # Pinned by commit SHA (v1.0.8 = d499194be74aeb3bc7dbed3a224a87e1831132c7).

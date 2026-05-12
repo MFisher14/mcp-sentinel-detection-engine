@@ -1,0 +1,33 @@
+title: Entra ID Privileged Role Assignment
+id: 374ba99c-6fe0-47f6-b5e3-0c18f2c58ce9
+status: experimental
+description: >
+  Detect the assignment of a Tier-0 Entra ID directory role — Global
+  Administrator or Privileged Role Administrator — via the
+  "Add member to role" audit operation. Role grants of this scope should
+  be rare and exclusively the product of break-glass procedures or
+  documented onboarding; everything else warrants immediate review.
+references:
+  - https://attack.mitre.org/techniques/T1098/003/
+  - https://attack.mitre.org/techniques/T1078/004/
+author: Maximus Fisher
+date: 2026-05-12
+tags:
+  - attack.persistence
+  - attack.privilege-escalation
+  - attack.t1098.003
+  - attack.t1078.004
+logsource:
+  product: azure
+  service: auditlogs
+detection:
+  selection:
+    OperationName: 'Add member to role'
+    TargetResources|contains:
+      - 'Global Administrator'
+      - 'Privileged Role Administrator'
+  condition: selection
+falsepositives:
+  - Break-glass account creation under a documented runbook.
+  - Tenant-bootstrap onboarding for a new administrator hire.
+level: high

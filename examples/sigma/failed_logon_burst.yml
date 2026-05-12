@@ -1,0 +1,32 @@
+title: Failed Network Logon Burst
+id: f777a63c-b436-4b3a-ae60-553cea538a34
+status: experimental
+description: >
+  Detect a burst of failed Windows network logons from the same source IP —
+  five or more EventID 4625 (LogonType 3) events within a ten-minute window.
+  The threshold semantics are described here but the Sigma rule itself emits
+  the per-event predicate; aggregation is intended to be applied downstream
+  via the scheduled-analytics-rule frequency/period (see
+  generate_sentinel_terraform).
+references:
+  - https://attack.mitre.org/techniques/T1110/
+  - https://attack.mitre.org/techniques/T1110/001/
+author: Maximus Fisher
+date: 2026-05-12
+tags:
+  - attack.credential-access
+  - attack.t1110
+  - attack.t1110.001
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4625
+    LogonType: 3
+  condition: selection
+falsepositives:
+  - Legitimate users mistyping passwords from shared workstations.
+  - Stale service accounts whose passwords have rotated but whose clients
+    have not been redeployed.
+level: medium

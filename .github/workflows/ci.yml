@@ -54,3 +54,46 @@ jobs:
           name: coverage-xml
           path: coverage.xml
           if-no-files-found: warn
+
+  pip-audit:
+    name: pip-audit (OSV)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.12 and install project
+        run: |
+          uv python install 3.12
+          # --seed gives the venv its own pip/setuptools/wheel; the
+          # pip-audit action shells out to `python -m pip` inside the
+          # venv, which fails without it.
+          uv venv --seed --python 3.12
+          uv pip install -e ".[dev]"
+
+      # Pinned by commit SHA (v1.0.8 = d499194be74aeb3bc7dbed3a224a87e1831132c7).
+      # The action fails the job on any reported vulnerability. The OSV
+      # advisory database is broader than PyPI's; pip-audit upstream does
+      # not currently support a severity threshold, so any reported
+      # vulnerability fails the build.
+      #
+      # ignore-vulns entries:
+      #   CVE-2025-69872 — diskcache <=5.6.3 uses pickle for serialization;
+      #     an attacker with write access to the cache directory can achieve
+      #     RCE. Pulled in transitively via pysigma's parsed-rule cache.
+      #     No fixed version published. Exposure here requires local write
+      #     to the cache dir, i.e. an attacker who already has local code
+      #     execution on the host running the server. Tracked for v0.2.
+      - name: pip-audit (fail on any reported vulnerability)
+        uses: pypa/gh-action-pip-audit@d499194be74aeb3bc7dbed3a224a87e1831132c7  # v1.0.8
+        with:
+          virtual-environment: ".venv"
+          vulnerability-service: "osv"
+          summary: true
+          ignore-vulns: |
+            CVE-2025-69872

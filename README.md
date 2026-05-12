@@ -1,6 +1,7 @@
 # mcp-sentinel-detection-engine
 
 [![CI](https://github.com/MFisher14/mcp-sentinel-detection-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/MFisher14/mcp-sentinel-detection-engine/actions/workflows/ci.yml)
+[![pip-audit](https://img.shields.io/github/check-runs/MFisher14/mcp-sentinel-detection-engine/main?nameFilter=pip-audit%20%28OSV%29&label=pip-audit)](https://github.com/MFisher14/mcp-sentinel-detection-engine/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub Issues](https://img.shields.io/github/issues/MFisher14/mcp-sentinel-detection-engine.svg)](https://github.com/MFisher14/mcp-sentinel-detection-engine/issues)

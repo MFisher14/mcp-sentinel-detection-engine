@@ -34,6 +34,27 @@ client.
    }
    ```
 
+   Substitute the path to your clone; it must be absolute, since MCP
+   clients neither expand `~` nor inherit your shell's working
+   directory. If the console script isn't where you expect it, invoke the
+   module instead — same server:
+
+   ```json
+   {
+     "mcpServers": {
+       "sentinel-detection-engine": {
+         "command": "/absolute/path/to/mcp-sentinel-detection-engine/.venv/bin/python",
+         "args": ["-m", "mcp_sentinel_detection_engine.server"]
+       }
+     }
+   }
+   ```
+
+   The package is **not yet on PyPI**, so the `uvx --from
+   mcp-sentinel-detection-engine` form does not resolve — the editable
+   install in step 1 is required. See
+   [PyPI installation](../README.md#pypi-installation-not-yet-available).
+
    Restart Claude Desktop and you should see four tools advertised under
    `sentinel-detection-engine`. To additionally exercise `dry_run_kql`
    against a live workspace, add the `AZURE_*` and `SENTINEL_WORKSPACE_ID`

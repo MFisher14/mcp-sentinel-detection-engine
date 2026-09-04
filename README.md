@@ -318,26 +318,59 @@ against a real Sentinel workspace.
 
 ## Installation
 
-### With `uvx`
+> **v0.1.0 is not published to PyPI.** Install from source. The
+> [PyPI installation (not yet available)](#pypi-installation-not-yet-available)
+> section below records the commands that will work once it is.
 
-```bash
-uvx --from mcp-sentinel-detection-engine mcp-sentinel-detection-engine
-```
+### From source
 
-### With `pip`
-
-```bash
-pip install mcp-sentinel-detection-engine
-mcp-sentinel-detection-engine
-```
-
-### From source (development)
+Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/MFisher14/mcp-sentinel-detection-engine.git
 cd mcp-sentinel-detection-engine
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
+```
+
+Verify the install — the server should start, advertise its four tools
+over stdio, and wait:
+
+```bash
+mcp-sentinel-detection-engine
+```
+
+It exits with code 2 and a message on stderr if Azure configuration is
+present but malformed. With **no** Azure environment variables set it
+starts normally: `convert_sigma_to_kql`, `validate_kql_against_schema`,
+and `generate_sentinel_terraform` are pure functions and need no
+credentials. Press Ctrl-C to stop it, then wire it into your MCP client
+via [Claude Desktop / Claude Code](#claude-desktop--claude-code) below.
+
+Two equivalent invocations are available for the client config, and both
+require the editable install above:
+
+| Invocation                                                  | Notes                                                      |
+| ----------------------------------------------------------- | ---------------------------------------------------------- |
+| `<repo>/.venv/bin/mcp-sentinel-detection-engine`            | Console script. Absolute path; no `cwd` needed.            |
+| `<repo>/.venv/bin/python -m mcp_sentinel_detection_engine.server` | Module form. Useful if the console script isn't on `PATH`. |
+
+Without a virtualenv, `pip install -e ".[dev]"` inside the clone works
+the same way; substitute your interpreter's path for `.venv/bin/`.
+
+### PyPI installation (not yet available)
+
+**These commands do not work yet** — the package has not been published.
+They are recorded here so the client config and docs can switch over in
+one step once it is. Track publication in
+[GitHub Milestones](https://github.com/MFisher14/mcp-sentinel-detection-engine/milestones).
+
+```bash
+# Neither of these resolves today.
+uvx --from mcp-sentinel-detection-engine mcp-sentinel-detection-engine
+
+pip install mcp-sentinel-detection-engine
+mcp-sentinel-detection-engine
 ```
 
 ---
@@ -411,14 +444,17 @@ Two passphrase patterns are supported per tenant; pick **one**:
 Add to your MCP client's config (Claude Desktop:
 `claude_desktop_config.json`; Claude Code: `~/.claude.json`).
 
+Replace `/absolute/path/to/mcp-sentinel-detection-engine` with the path
+to your clone. The path must be absolute — MCP clients do not expand `~`
+and do not inherit your shell's working directory.
+
 #### Single tenant
 
 ```json
 {
   "mcpServers": {
     "sentinel-detection-engine": {
-      "command": "uvx",
-      "args": ["--from", "mcp-sentinel-detection-engine", "mcp-sentinel-detection-engine"],
+      "command": "/absolute/path/to/mcp-sentinel-detection-engine/.venv/bin/mcp-sentinel-detection-engine",
       "env": {
         "AZURE_TENANT_ID": "00000000-0000-0000-0000-000000000000",
         "AZURE_CLIENT_ID": "00000000-0000-0000-0000-000000000000",
@@ -436,11 +472,50 @@ Add to your MCP client's config (Claude Desktop:
 {
   "mcpServers": {
     "sentinel-detection-engine": {
-      "command": "uvx",
-      "args": ["--from", "mcp-sentinel-detection-engine", "mcp-sentinel-detection-engine"],
+      "command": "/absolute/path/to/mcp-sentinel-detection-engine/.venv/bin/mcp-sentinel-detection-engine",
       "env": {
         "MCP_SENTINEL_TENANTS_FILE": "/etc/mcp-sentinel-detection-engine/tenants.json",
         "CONTOSO_CERT_PASS": "..."
+      }
+    }
+  }
+}
+```
+
+#### Module form
+
+If the console script isn't where you expect it, invoke the module
+directly instead — same server, same `env` block:
+
+```json
+{
+  "mcpServers": {
+    "sentinel-detection-engine": {
+      "command": "/absolute/path/to/mcp-sentinel-detection-engine/.venv/bin/python",
+      "args": ["-m", "mcp_sentinel_detection_engine.server"]
+    }
+  }
+}
+```
+
+#### Once published to PyPI (not yet available)
+
+`uvx` will fetch and run the server without a clone. **This does not work
+today** — see
+[PyPI installation](#pypi-installation-not-yet-available). Keep using a
+from-source `command` above until then.
+
+```json
+{
+  "mcpServers": {
+    "sentinel-detection-engine": {
+      "command": "uvx",
+      "args": ["--from", "mcp-sentinel-detection-engine", "mcp-sentinel-detection-engine"],
+      "env": {
+        "AZURE_TENANT_ID": "00000000-0000-0000-0000-000000000000",
+        "AZURE_CLIENT_ID": "00000000-0000-0000-0000-000000000000",
+        "AZURE_CERT_PATH": "/Users/me/.config/mcp-sentinel-detection-engine/app-cert.pfx",
+        "SENTINEL_WORKSPACE_ID": "00000000-0000-0000-0000-000000000000"
       }
     }
   }

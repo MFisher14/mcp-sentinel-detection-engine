@@ -358,12 +358,55 @@ class TokenManager:
         return _CachedToken(access_token=access_token, expires_at_epoch=expires_at)
 
 
-def build_default_token_manager() -> TokenManager:
-    """Build the token manager used by the production server."""
+class LazyCredentialProvider(CredentialProvider):
+    """Defers building the real provider until a credential is actually needed.
+
+    Three of the four tools (``convert_sigma_to_kql``,
+    ``validate_kql_against_schema``, ``generate_sentinel_terraform``) are pure
+    functions that never touch Azure. Constructing the credential provider
+    eagerly at startup would make an unconfigured host fail to start at all,
+    taking those three offline tools down with it. Resolution is therefore
+    deferred to first use, so a missing or malformed credential surfaces as an
+    error from ``dry_run_kql`` — the only tool that needs one — rather than as
+    a dead server.
+
+    The underlying ``AuthError`` is raised on every call, not cached away: a
+    misconfigured host keeps reporting why.
+    """
+
+    def __init__(self, factory: Callable[[], CredentialProvider]) -> None:
+        self._factory = factory
+        self._resolved: CredentialProvider | None = None
+        self._lock = threading.Lock()
+
+    def _provider(self) -> CredentialProvider:
+        with self._lock:
+            if self._resolved is None:
+                self._resolved = self._factory()
+            return self._resolved
+
+    def get_credentials(self, tenant_key: str = DEFAULT_TENANT_KEY) -> AzureCredentials:
+        return self._provider().get_credentials(tenant_key)
+
+    def list_tenants(self) -> list[str]:
+        return self._provider().list_tenants()
+
+    @property
+    def default_tenant_key(self) -> str:
+        return self._provider().default_tenant_key
+
+
+def _build_configured_provider() -> CredentialProvider:
     tenants_file = os.environ.get("MCP_SENTINEL_TENANTS_FILE")
-    provider: CredentialProvider
     if tenants_file:
-        provider = JsonFileCredentialProvider(tenants_file)
-    else:
-        provider = EnvCredentialProvider()
-    return TokenManager(provider)
+        return JsonFileCredentialProvider(tenants_file)
+    return EnvCredentialProvider()
+
+
+def build_default_token_manager() -> TokenManager:
+    """Build the token manager used by the production server.
+
+    Credential loading is lazy — see :class:`LazyCredentialProvider`. This
+    function does not raise on a missing Azure configuration.
+    """
+    return TokenManager(LazyCredentialProvider(_build_configured_provider))

@@ -128,6 +128,9 @@ def build_server(token_manager: TokenManager) -> Server:
 async def _async_main() -> None:
     audit("server-starting", version=__version__)
     try:
+        # Credentials are resolved lazily, on the first call that actually
+        # needs Azure. An unconfigured host still starts and serves the three
+        # pure tools; only dry_run_kql reports the missing configuration.
         token_manager = build_default_token_manager()
     except SentinelError as exc:
         audit_error("server-startup-failed", error_class=exc.__class__.__name__)

@@ -6,7 +6,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub Issues](https://img.shields.io/github/issues/MFisher14/mcp-sentinel-detection-engine.svg)](https://github.com/MFisher14/mcp-sentinel-detection-engine/issues)
 
-> **Status: Alpha — v0.1.0 (May 2026).** Tool surface and config schema
+> **Status: Alpha — v0.1.1 (September 2026).** Tool surface and config schema
 > may change before v1.0. See
 > [GitHub Milestones](https://github.com/MFisher14/mcp-sentinel-detection-engine/milestones)
 > for the v0.2 / v0.3 / v0.4 plan.

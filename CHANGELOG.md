@@ -6,6 +6,54 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-04
+
+A build-repair and documentation release. No tool surface or config
+schema changes; every v0.1.0 client config keeps working.
+
+### Fixed
+
+- **The server now starts without Azure credentials, as documented.** It
+  previously did not: startup built the credential provider eagerly, so a
+  host with no `AZURE_*` variables exited with code 2 before serving
+  anything — taking down the three pure tools that never touch Azure
+  along with the one that does. Credential resolution is now deferred to
+  first use, so an unconfigured host starts, advertises all four tools,
+  and serves `convert_sigma_to_kql`, `validate_kql_against_schema` and
+  `generate_sentinel_terraform`. Only `dry_run_kql` reports the missing
+  configuration, as an `auth_failure` result rather than a dead server.
+  This makes the documented no-credentials Quickstart work for the first
+  time.
+- Pinned `mcp` to `>=1.0.0,<2.0.0`. The constraint was unbounded, and
+  `mcp` 2.x renames the protocol field names (`inputSchema` →
+  `input_schema`, `structuredContent` → `structured_content`, `isError` →
+  `is_error`), so a fresh install resolved to 2.x and broke the build
+  with 18 `mypy --strict` errors and 2 failing tests. Lifting the bound
+  needs the matching rename in `server.py`; tracked for v0.2.
+
+### Documentation
+
+- Installation now leads with the from-source path, which is the only one
+  that works — the package is not published to PyPI. The `uvx` and `pip
+  install` commands moved under a heading marking them unavailable, and
+  the Claude Desktop / Claude Code config snippets in both `README.md`
+  and `examples/README.md` gained working from-source invocations
+  (console script and `python -m`), with the `uvx` form kept alongside as
+  future. Previously the README contradicted itself: Installation offered
+  commands that fail while the Quickstart directly above used the
+  from-source path.
+- Corrected the documented `validate_kql_against_schema` output, which
+  did not match the tool's actual response, and documented why: column
+  extraction is a deliberate over-approximation that does not strip
+  string literals, so a compared-against value is reported alongside a
+  real typo. A test now pins the whole documented payload.
+- Expanded the v0.1.0 changelog entry from a single bullet into per-tool
+  descriptions.
+- Added `docs/demo/README.md` — a reproducible four-turn script,
+  capture and encoding settings, and embed markdown for a GIF of the
+  full Sigma → KQL → validate → Terraform loop running with no Azure
+  credentials.
+
 ### Security
 
 - Known transitive vulnerability in `diskcache` (≤5.6.3, CVE-2025-69872):
@@ -88,8 +136,9 @@ Azure credentials**; only `dry_run_kql` needs a tenant.
   `azure_monitor` pipeline mapping, including an adversarial rule that
   carries a prompt-injection payload, zero-width spaces, and a bidi
   override as the demo asset for threat-model T1.
-- 143 tests at 86% coverage; `ruff` and `mypy --strict` clean on Python
+- 135 tests at 86% coverage; `ruff` and `mypy --strict` clean on Python
   3.11 and 3.12.
 
-[Unreleased]: https://github.com/MFisher14/mcp-sentinel-detection-engine/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/MFisher14/mcp-sentinel-detection-engine/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/MFisher14/mcp-sentinel-detection-engine/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/MFisher14/mcp-sentinel-detection-engine/releases/tag/v0.1.0

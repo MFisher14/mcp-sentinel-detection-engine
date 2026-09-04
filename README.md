@@ -11,8 +11,29 @@
 > [GitHub Milestones](https://github.com/MFisher14/mcp-sentinel-detection-engine/milestones)
 > for the v0.2 / v0.3 / v0.4 plan.
 
+<!-- DEMO ASSET GOES HERE.
+     Record it with docs/demo/README.md, commit the GIF to
+     docs/demo/sentinel-detection-loop.gif, then delete this comment and
+     uncomment the block below. It is left commented so the README never
+     renders a broken image while the asset is unrecorded.
+
+## Demo
+
+![Claude Desktop driving convert_sigma_to_kql, validate_kql_against_schema, and generate_sentinel_terraform against a bundled Sigma rule, with no Azure credentials configured](docs/demo/sentinel-detection-loop.gif)
+
+*Sigma → KQL → schema validation → Terraform, driven from Claude Desktop
+against the bundled `examples/sigma/failed_logon_burst.yml`.
+`validate_kql_against_schema` catches the misspelled `LogonTpye` and
+proposes `LogonType` offline; `generate_sentinel_terraform` emits the
+`azurerm_sentinel_alert_rule_scheduled` block. **No Azure credentials** —
+three of the four tools are pure functions. Reproduce it with
+[the recording script](docs/demo/README.md).*
+
+-->
+
 ## Table of contents
 
+<!-- - [Demo](#demo)  ← uncomment together with the demo block above -->
 - [Why an MCP server, not just a CLI?](#why-an-mcp-server-not-just-a-cli)
 - [Quickstart (offline)](#quickstart-offline)
 - [Tools](#tools)

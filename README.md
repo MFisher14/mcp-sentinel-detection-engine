@@ -80,8 +80,8 @@ engineer actually does — is the loop around it:
    follow-up questions; a CLI can't.
 2. **Catch the column typo before Sentinel does.** `validate_kql_against_schema` 
    checks the generated KQL against a bundled Log Analytics schema snapshot 
-   and proposes corrections (`AccontName` → `AccountName`, `Account`). That's 
-   a conversation, not a flag.
+   and proposes corrections (`AccontName` → `AccountName`, `Account`, 
+   `AccountType`). That's a conversation, not a flag.
 3. **Smoke-test on live data, read-only.** `dry_run_kql` runs the converted 
    query against an actual workspace with a 10-row cap and a 60-second 
    timeout. The agent sees the rows and decides whether the rule is right.
@@ -182,15 +182,27 @@ Pure function. No Azure auth required.
 {
   "valid": false,
   "table": "SecurityEvent",
-  "unknown_columns": ["AccontName"],
-  "suggestions": {"AccontName": ["AccountName", "Account"]},
-  "metadata": {"schema_column_count": 41, "referenced_column_count": 1}
+  "unknown_columns": ["AccontName", "admin"],
+  "suggestions": {"AccontName": ["AccountName", "Account", "AccountType"]},
+  "metadata": {"schema_column_count": 42, "referenced_column_count": 2}
 }
 ```
 
 Offline check against the bundled Log Analytics schema snapshot. No
 Azure auth required. v0.2 will offer live schema fetching via the Log
 Analytics metadata API.
+
+Column extraction is a deliberate over-approximation: it collects every
+bare identifier that isn't a KQL keyword or a known table name, and it
+does **not** strip string literals. That is why `admin` — the *value*
+being compared against, not a column — shows up in `unknown_columns`
+above. The trade-off is intentional: a false positive costs the agent one
+follow-up question, whereas missing a real typo costs a failed rule in
+Sentinel. Read `unknown_columns` as "identifiers worth a second look",
+and treat `suggestions` as the actionable part — a genuine column typo is
+the case that gets a close match. A query whose predicates compare
+against string literals will therefore rarely report `valid: true`; use
+literal-free predicates if you want that signal to be crisp.
 
 ### `dry_run_kql`
 

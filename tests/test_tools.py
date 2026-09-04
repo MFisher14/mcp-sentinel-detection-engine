@@ -116,6 +116,33 @@ async def test_validate_offers_suggestions_for_typos() -> None:
     assert "AccountName" in suggestions
 
 
+async def test_validate_matches_the_documented_readme_example() -> None:
+    """Pin the exact response the README documents for this tool.
+
+    The README's example output had drifted from reality (it omitted the
+    string-literal false positive and understated both counts). The existing
+    tests only asserted substrings, so nothing caught it. Assert the whole
+    payload: if this fails, update the README's
+    ``validate_kql_against_schema`` output block to match.
+    """
+    result = await validate_kql.run(
+        ctx=None,  # type: ignore[arg-type]
+        raw_params={
+            "query": "SecurityEvent | where AccontName == 'admin'",
+            "table": "SecurityEvent",
+        },
+    )
+    assert result == {
+        "valid": False,
+        "table": "SecurityEvent",
+        # "admin" is the compared-against literal, not a column: extraction
+        # is an over-approximation and does not strip string literals.
+        "unknown_columns": ["AccontName", "admin"],
+        "suggestions": {"AccontName": ["AccountName", "Account", "AccountType"]},
+        "metadata": {"schema_column_count": 42, "referenced_column_count": 2},
+    }
+
+
 async def test_validate_unknown_table_errors() -> None:
     with pytest.raises(SchemaValidationError):
         await validate_kql.run(

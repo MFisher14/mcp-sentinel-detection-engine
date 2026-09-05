@@ -20,7 +20,7 @@ TOOL_DESCRIPTION = (
     "target table's schema, and ``suggestions`` (closest-match column names "
     "via difflib). No live Azure API call is made — this is a fast offline "
     "check the model can run before paying the round-trip of ``dry_run_kql``. "
-    "v0.2 will fetch the workspace schema live via the Log Analytics metadata "
+    "v0.3 will fetch the workspace schema live via the Log Analytics metadata "
     "API. The ``tenant`` parameter is accepted for symmetry but is unused."
 )
 

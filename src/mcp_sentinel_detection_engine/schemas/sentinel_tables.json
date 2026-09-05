@@ -2,7 +2,7 @@
   "_meta": {
     "source": "Microsoft Learn — Azure Monitor Logs / Microsoft Sentinel table reference",
     "snapshot_date": "2026-05-12",
-    "note": "Column subset commonly used in detection rules. Not exhaustive. v0.2 will fetch the live schema via the Log Analytics metadata API.",
+    "note": "Column subset commonly used in detection rules. Not exhaustive. v0.3 will fetch the live schema via the Log Analytics metadata API.",
     "version": "0.1.0"
   },
   "tables": {

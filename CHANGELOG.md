@@ -6,10 +6,23 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-09-04
+## [0.2.0] - 2026-09-05
 
-A build-repair and documentation release. No tool surface or config
-schema changes; every v0.1.0 client config keeps working.
+A build-repair, correctness and documentation release. No breaking
+changes to the tool surface or config schema; every v0.1.0 client config
+keeps working.
+
+### Changed
+
+- `__version__` is now resolved from installed distribution metadata via
+  `importlib.metadata` rather than being a hardcoded literal, so
+  `pyproject.toml` is the single source of truth and the two cannot drift
+  apart. An uninstalled source checkout with no distribution metadata
+  reports `0.0.0+unknown` instead of raising at import time.
+- Roadmap references that previously named v0.2 now name v0.3, since the
+  features they describe (live schema fetching via the Log Analytics
+  metadata API, HTTP/SSE transport, the `mcp` 2.x migration, and the
+  `diskcache` fix) are not in this release.
 
 ### Fixed
 
@@ -29,7 +42,7 @@ schema changes; every v0.1.0 client config keeps working.
   `input_schema`, `structuredContent` → `structured_content`, `isError` →
   `is_error`), so a fresh install resolved to 2.x and broke the build
   with 18 `mypy --strict` errors and 2 failing tests. Lifting the bound
-  needs the matching rename in `server.py`; tracked for v0.2.
+  needs the matching rename in `server.py`; tracked for v0.3.
 
 ### Documentation
 
@@ -61,7 +74,7 @@ schema changes; every v0.1.0 client config keeps working.
   has local write access to the cache directory. Pulled in via
   `pysigma`'s parsed-rule cache. No fixed upstream version is published.
   The pip-audit CI job allow-lists this CVE explicitly; revisit when a
-  fix lands or `pysigma` migrates off `diskcache`. Tracked for v0.2.
+  fix lands or `pysigma` migrates off `diskcache`. Tracked for v0.3.
 
 ## [0.1.0] - 2026-05-12
 
@@ -87,7 +100,7 @@ Azure credentials**; only `dry_run_kql` needs a tenant.
   captured 2026-05-12). Returns `valid`, the `unknown_columns` list, and
   `difflib`-derived `suggestions` for each miss (`LogonTpye` →
   `LogonType`), so a typo is caught before it costs a workspace
-  round-trip. Pure function — no Azure auth. v0.2 will fetch the live
+  round-trip. Pure function — no Azure auth. v0.3 will fetch the live
   schema via the Log Analytics metadata API.
 - **`dry_run_kql`** — smoke-test a query against a real Sentinel
   workspace, read-only by construction: `row_limit` capped at 10, a
@@ -139,6 +152,6 @@ Azure credentials**; only `dry_run_kql` needs a tenant.
 - 135 tests at 86% coverage; `ruff` and `mypy --strict` clean on Python
   3.11 and 3.12.
 
-[Unreleased]: https://github.com/MFisher14/mcp-sentinel-detection-engine/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/MFisher14/mcp-sentinel-detection-engine/compare/v0.1.0...v0.1.1
+[Unreleased]: https://github.com/MFisher14/mcp-sentinel-detection-engine/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/MFisher14/mcp-sentinel-detection-engine/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/MFisher14/mcp-sentinel-detection-engine/releases/tag/v0.1.0

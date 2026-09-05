@@ -6,10 +6,10 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub Issues](https://img.shields.io/github/issues/MFisher14/mcp-sentinel-detection-engine.svg)](https://github.com/MFisher14/mcp-sentinel-detection-engine/issues)
 
-> **Status: Alpha — v0.1.1 (September 2026).** Tool surface and config schema
+> **Status: Alpha — v0.2.0 (September 2026).** Tool surface and config schema
 > may change before v1.0. See
 > [GitHub Milestones](https://github.com/MFisher14/mcp-sentinel-detection-engine/milestones)
-> for the v0.2 / v0.3 / v0.4 plan.
+> for the v0.3 / v0.4 plan.
 
 <!-- DEMO ASSET GOES HERE.
      Record it with docs/demo/README.md, commit the GIF to
@@ -59,7 +59,7 @@ authenticates as one or more Azure App Registrations via OAuth 2.0
 **certificate** client credentials, supports a single tenant or many,
 and treats every input and every upstream response as untrusted.
 
-> **v0.1 status:** Sigma → KQL via pySigma's `pysigma-backend-kusto`
+> **v0.2 status:** Sigma → KQL via pySigma's `pysigma-backend-kusto`
 > with the `azure_monitor` pipeline, static column validation against a
 > bundled Log Analytics schema snapshot, live KQL dry-run against a
 > Sentinel workspace with certificate-based auth, and Terraform emission
@@ -189,7 +189,7 @@ Pure function. No Azure auth required.
 ```
 
 Offline check against the bundled Log Analytics schema snapshot. No
-Azure auth required. v0.2 will offer live schema fetching via the Log
+Azure auth required. v0.3 will offer live schema fetching via the Log
 Analytics metadata API.
 
 Column extraction is a deliberate over-approximation: it collects every
@@ -351,7 +351,7 @@ against a real Sentinel workspace.
 
 ## Installation
 
-> **v0.1.0 is not published to PyPI.** Install from source. The
+> **This package is not published to PyPI.** Install from source. The
 > [PyPI installation (not yet available)](#pypi-installation-not-yet-available)
 > section below records the commands that will work once it is.
 
@@ -630,7 +630,7 @@ intentionally includes:
   investigation rather than rule authoring. The two servers compose:
   hunt in Defender XDR, then ship a Sigma rule via this server.
 - Detection-as-code Git workflow integration (`v0.3`).
-- HTTP/SSE transport (`v0.2`); v0.1 is stdio-only.
+- HTTP/SSE transport (`v0.3`); v0.2 is stdio-only.
 
 Keeping the LLM-facing surface read-only against Azure means a
 compromise of the model or its prompt cannot cause state changes in
@@ -654,4 +654,4 @@ CI runs on every push and PR to `main` against Python 3.11 and 3.12.
 ## Roadmap
 
 See [GitHub Milestones](https://github.com/MFisher14/mcp-sentinel-detection-engine/milestones)
-for the current scope of v0.2, v0.3, and future releases.
+for the current scope of v0.3 and future releases.

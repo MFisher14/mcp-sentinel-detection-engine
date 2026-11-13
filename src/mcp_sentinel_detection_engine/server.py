@@ -21,7 +21,16 @@ from .auth import TokenManager, build_default_token_manager
 from .errors import ErrorCode, SentinelError
 from .ratelimit import RateLimiter
 from .tool_context import ToolContext
-from .tools import convert_sigma, dry_run, emit_terraform, validate_kql
+from .tools import (
+    convert_sigma,
+    detect_drift,
+    dry_run,
+    emit_terraform,
+    link_hunt,
+    list_rules,
+    terraform_plan,
+    validate_kql,
+)
 
 ServerName = "mcp-sentinel-detection-engine"
 
@@ -30,37 +39,30 @@ _log = logging.getLogger("mcp_sentinel_detection_engine.server")
 ToolHandler = Callable[[ToolContext, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
+_TOOL_MODULES = (
+    convert_sigma,
+    validate_kql,
+    dry_run,
+    emit_terraform,
+    list_rules,
+    detect_drift,
+    terraform_plan,
+    link_hunt,
+)
+
+
 def _tool_definitions() -> list[mcp_types.Tool]:
     return [
         mcp_types.Tool(
-            name=convert_sigma.TOOL_NAME,
-            description=convert_sigma.TOOL_DESCRIPTION,
-            inputSchema=convert_sigma.INPUT_SCHEMA,
-        ),
-        mcp_types.Tool(
-            name=validate_kql.TOOL_NAME,
-            description=validate_kql.TOOL_DESCRIPTION,
-            inputSchema=validate_kql.INPUT_SCHEMA,
-        ),
-        mcp_types.Tool(
-            name=dry_run.TOOL_NAME,
-            description=dry_run.TOOL_DESCRIPTION,
-            inputSchema=dry_run.INPUT_SCHEMA,
-        ),
-        mcp_types.Tool(
-            name=emit_terraform.TOOL_NAME,
-            description=emit_terraform.TOOL_DESCRIPTION,
-            inputSchema=emit_terraform.INPUT_SCHEMA,
-        ),
+            name=module.TOOL_NAME,
+            description=module.TOOL_DESCRIPTION,
+            inputSchema=module.INPUT_SCHEMA,
+        )
+        for module in _TOOL_MODULES
     ]
 
 
-_HANDLERS: dict[str, ToolHandler] = {
-    convert_sigma.TOOL_NAME: convert_sigma.run,
-    validate_kql.TOOL_NAME: validate_kql.run,
-    dry_run.TOOL_NAME: dry_run.run,
-    emit_terraform.TOOL_NAME: emit_terraform.run,
-}
+_HANDLERS: dict[str, ToolHandler] = {module.TOOL_NAME: module.run for module in _TOOL_MODULES}
 
 
 def _error_result(code: ErrorCode, message: str) -> mcp_types.CallToolResult:

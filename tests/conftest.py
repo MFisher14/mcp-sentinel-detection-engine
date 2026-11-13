@@ -162,3 +162,60 @@ def make_multi_tenant_context():
 
     token_mgr = TokenManager(provider, msal_factory=msal_factory)
     return _build_context_factory(token_mgr)
+
+
+MGMT_SUBSCRIPTION = "99999999-9999-9999-9999-999999999999"
+
+
+@pytest.fixture
+def make_mgmt_context():
+    """Factory for a ToolContext whose tenants have management-plane config.
+
+    Tenants: ``contoso`` (default, configured) and ``fabrikam`` (configured),
+    plus ``bare`` (no management config) when ``include_bare=True``.
+    """
+    from mcp_sentinel_detection_engine.auth import ManagementTarget
+    from mcp_sentinel_detection_engine.tool_context import ToolContext
+
+    def factory(handler, *, include_bare: bool = False):
+        creds = {
+            "contoso": AzureCredentials(
+                tenant_id="11111111-1111-1111-1111-111111111111",
+                client_id="22222222-2222-2222-2222-222222222222",
+                cert_path="/dev/null",
+                workspace_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                management=ManagementTarget(MGMT_SUBSCRIPTION, "rg-contoso", "ws-contoso"),
+            ),
+            "fabrikam": AzureCredentials(
+                tenant_id="33333333-3333-3333-3333-333333333333",
+                client_id="44444444-4444-4444-4444-444444444444",
+                cert_path="/dev/null",
+                workspace_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                management=ManagementTarget(MGMT_SUBSCRIPTION, "rg-fabrikam", "ws-fabrikam"),
+            ),
+        }
+        if include_bare:
+            creds["bare"] = AzureCredentials(
+                tenant_id="55555555-5555-5555-5555-555555555555",
+                client_id="66666666-6666-6666-6666-666666666666",
+                cert_path="/dev/null",
+                workspace_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+            )
+        provider = FakeCredentialProvider(creds, default="contoso")
+        token_mgr = TokenManager(provider, msal_factory=lambda **_: FakeMsalApp())
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        ctx = ToolContext(token_mgr, http_client=http_client)
+        original = ctx.management_client_for
+
+        async def _no_sleep(_: float) -> None:
+            return None
+
+        def patched(tenant_key: str):
+            client = original(tenant_key)
+            client._sleep = _no_sleep
+            return client
+
+        ctx.management_client_for = patched  # type: ignore[method-assign]
+        return ctx
+
+    return factory

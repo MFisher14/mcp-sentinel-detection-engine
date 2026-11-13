@@ -157,7 +157,8 @@ to "revoke a leaked cert in Azure portal + rotate the PFX." Store PFX
 files on an encrypted volume; rotate the cert annually or on suspected
 exposure. Certs resist *log-scrape* exfiltration (unlike a secret quoted
 in a config) but not *filesystem* exfiltration — that boundary is the
-host OS, not this server.
+host OS, not this server. Tenants sourced from a secret store
+(T11) remove the PFX from the filesystem entirely.
 
 ---
 
@@ -611,6 +612,88 @@ network mirror to pin it). `terraform plan` refreshes state using the
 plan identity's credentials, so that identity needs read access to the
 workspace's alert rules. Plan output includes the rule definitions,
 which the model already supplied.
+
+---
+
+## T11 — Secret-store credential retrieval and the bootstrap-identity boundary *(A1, A3)*
+
+**Scenario.** With a `key_vault` or `vault` block in the tenants
+config, the PFX for each tenant's App Registration lives in Azure Key
+Vault or HashiCorp Vault rather than on disk. That adds a new
+credential, the **bootstrap identity** (a managed identity, a separate
+App Registration, or a Vault token / AppRole / Kubernetes role), whose
+compromise reveals *every* tenant certificate it can read. It also
+creates new leak paths: secret-store URLs, secret names, and token
+sources showing up in error messages, the PFX body showing up in logs,
+and a tampered config pointing the server at an attacker-controlled
+"vault" that serves a certificate of the attacker's choosing.
+
+**Mitigations.**
+
+1. **Separate bootstrap identity, read-only scope.** The PFX can't
+   fetch itself, so Key Vault is reached with a distinct identity whose
+   token is scoped to the vault resource only
+   (`https://vault.azure.net/.default`, or the sovereign-cloud
+   equivalent derived from the vault hostname). Grant it `Key Vault
+   Secrets User` on the one vault, and nothing on the Log Analytics
+   workspace. For HashiCorp Vault, the policy attached to the
+   token / AppRole / Kubernetes role should allow `read` on
+   `<mount>/data/<path>` only. A stolen bootstrap credential then
+   reveals certificates but cannot query Sentinel by itself. Each of
+   those certificates is still bound to its own read-only Log Analytics
+   role (T2).
+2. **Destination pinning.** Key Vault URLs must be `https` on a
+   `*.vault.azure.net` / `*.vault.azure.cn` /
+   `*.vault.usgovcloudapi.net` host with no path, query, port or
+   userinfo (`credentials/keyvault.validate_vault_url`). Vault
+   addresses must be `https` (plain `http` only for
+   `localhost`/`127.0.0.1` dev servers), and mount, path and namespace
+   must be `[A-Za-z0-9_.-]` segments with no `..`. A config edit can't
+   point the bearer token at an arbitrary host or path-traverse the
+   Vault API. Tested (`test_validate_vault_url_rejects_without_echo`,
+   `test_parse_vault_block_rejects`).
+3. **No oracle in errors.** Every fetch failure raises `AuthError` with
+   a fixed message plus at most the HTTP status code. The vault URL,
+   certificate/secret name, secret path, token env-var name and token
+   value never appear. Tested
+   (`test_fetch_http_errors_do_not_echo_vault_or_cert`,
+   `test_read_errors_do_not_echo_path_or_token_source`). Unexpected
+   exceptions inside a backend become a generic
+   `Failed to retrieve certificate from secret store`
+   (`CachingPfxSource`).
+4. **Audit the fetch, not the body.** `secret-store-fetch-succeeded` /
+   `-failed` records carry only the tenant key, the store type
+   (`key_vault` / `hashicorp_vault`), whether the certificate changed
+   (`rotated`), and on failure the exception class. The PFX bytes,
+   the passphrase and the bootstrap token are never logged.
+5. **Memory only.** The PFX is decoded and, if it has a passphrase,
+   decrypted once in memory (`credentials/pfx.normalize_pfx`), then
+   passed to MSAL as a PEM key + certificate. Nothing is written to a
+   temp file. Fetches are lazy (first token acquisition), so a
+   secret-store outage degrades `dry_run_kql` to `auth_failure`
+   rather than blocking server start or the offline tools.
+6. **Rotation without restart.** Fetched certificates are cached for
+   one hour. `TokenManager` fingerprints the PFX bytes and rebuilds the
+   tenant's MSAL app when they change (audited as
+   `certificate-rotated`), so a Key Vault auto-rotation or a Vault
+   secret update is picked up on a following token refresh.
+7. **Vault token hygiene.** Response-wrapped tokens are unwrapped
+   exactly once. Tokens are renewed via `auth/token/renew-self` once
+   the remaining TTL falls under the 60 s leeway. Non-renewable
+   AppRole / Kubernetes tokens are replaced by a fresh login, and a
+   `403` on read gets one re-login before failing (covers out-of-band
+   revocation).
+
+**Residual risk.** The bootstrap identity is now the
+highest-value credential on the host. Whoever holds it can read every
+tenant PFX it is authorized for, so it is the thing to monitor
+(Key Vault diagnostic logs, Vault audit device). On a VM, any process
+that can reach IMDS can mint the managed-identity token, so co-tenant
+processes on the same host (A3) still share that trust. The decrypted
+key lives in process memory for the process lifetime, as in T4. A
+cluster-wide revocation fan-out (forcing every server process to drop
+a certificate immediately) is out of scope: revocation takes effect
+when Azure AD rejects the certificate or within the one-hour cache TTL.
 
 ---
 

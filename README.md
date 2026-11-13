@@ -781,6 +781,98 @@ Only `PATH`, `ARM_*`, proxy/TLS variables and `TF_PLUGIN_CACHE_DIR` are
 passed to the Terraform process. The server's own `AZURE_*` variables
 and passphrases are not (see [`THREAT_MODEL.md`](THREAT_MODEL.md) T10).
 
+### Certificates from a secret store
+
+Each tenant needs exactly **one** certificate source: `cert_path` (a
+PFX on disk, as above), `key_vault`, or `vault`. With a secret store
+the PFX never touches the host filesystem: it is fetched on first use,
+held in memory only, cached for an hour, and picked up again
+automatically when it's rotated. A tenant with a secret-store block must
+not set `cert_passphrase` / `cert_passphrase_env`; the passphrase (if
+any) comes from inside the block. Failures surface as `auth_failure`
+without the vault URL, secret path, or token source. See
+[`THREAT_MODEL.md` T11](./THREAT_MODEL.md) for the bootstrap-identity
+boundary.
+
+#### Azure Key Vault
+
+```json
+"contoso": {
+  "tenant_id": "11111111-1111-1111-1111-111111111111",
+  "client_id": "22222222-2222-2222-2222-222222222222",
+  "workspace_id": "55555555-5555-5555-5555-555555555555",
+  "key_vault": {
+    "url": "https://contoso-sentinel-kv.vault.azure.net",
+    "certificate_name": "mcp-sentinel-contoso",
+    "bootstrap_identity": { "type": "managed_identity" }
+  }
+}
+```
+
+| Field                | Required | Description                                                                                       |
+| -------------------- | -------- | ------------------------------------------------------------------------------------------------- |
+| `url`                | yes      | `https://<name>.vault.azure.net` (also `.vault.azure.cn`, `.vault.usgovcloudapi.net`). No path.    |
+| `certificate_name`   | yes      | Key Vault certificate name. Its secret view (`application/x-pkcs12`) is fetched.                  |
+| `bootstrap_identity` | no       | Identity used to *read* the vault. Defaults to `{"type": "managed_identity"}`.                    |
+| `passphrase_env`     | no       | Env var holding the PFX passphrase. Only needed if you imported a passphrase-protected PFX as a plain secret. |
+
+`bootstrap_identity` is one of:
+
+- `{"type": "managed_identity", "client_id": "<optional user-assigned GUID>"}`.
+  Uses `IDENTITY_ENDPOINT`/`IDENTITY_HEADER` (App Service, Container
+  Apps, Functions) when present, otherwise the Instance Metadata Service
+  (VMs, AKS).
+- `{"type": "app_registration", "tenant_id": "...", "client_id": "...", "cert_path": "/secrets/bootstrap.pfx", "cert_passphrase_env": "..."}`.
+  A *separate* App Registration, granted only `Key Vault Secrets User`
+  on that vault.
+
+Grant the bootstrap identity `Key Vault Secrets User` (RBAC) or `get`
+on secrets (access policy) on the vault, and nothing on the Log
+Analytics workspace.
+
+#### HashiCorp Vault (KV v2)
+
+```json
+"fabrikam": {
+  "tenant_id": "33333333-3333-3333-3333-333333333333",
+  "client_id": "44444444-4444-4444-4444-444444444444",
+  "workspace_id": "66666666-6666-6666-6666-666666666666",
+  "vault": {
+    "address": "https://vault.internal.example:8200",
+    "mount": "secret",
+    "path": "mcp-sentinel/fabrikam",
+    "auth": { "method": "approle", "role_id_env": "VAULT_ROLE_ID", "secret_id_env": "VAULT_SECRET_ID" }
+  }
+}
+```
+
+The secret at `<mount>/data/<path>` must have a `pfx_base64` key (the
+base64-encoded PFX) and may have a `passphrase` key:
+
+```bash
+vault kv put secret/mcp-sentinel/fabrikam pfx_base64="$(base64 < app-cert.pfx)"
+```
+
+| Field       | Required | Description                                                                 |
+| ----------- | -------- | --------------------------------------------------------------------------- |
+| `address`   | yes      | Vault base URL. Must be `https` (plain `http` only for `localhost`).        |
+| `mount`     | yes      | KV-v2 mount (e.g. `secret`).                                                |
+| `path`      | yes      | Secret path under the mount.                                                |
+| `namespace` | no       | Vault Enterprise / HCP namespace (`X-Vault-Namespace`).                     |
+| `auth`      | yes      | Token source. See below.                                                    |
+
+`auth` is one of:
+
+- `{"method": "token", "token_env": "VAULT_TOKEN", "wrapped": false}`.
+  Token read from an env var. With `"wrapped": true` the env var holds a
+  response-wrapped token, which is unwrapped once at first use.
+- `{"method": "approle", "role_id_env": "...", "secret_id_env": "...", "mount": "approle"}`.
+- `{"method": "kubernetes", "role": "mcp-sentinel", "jwt_path": "/var/run/secrets/kubernetes.io/serviceaccount/token", "mount": "kubernetes"}`.
+
+Tokens are renewed with `auth/token/renew-self` when their remaining
+TTL drops below 60 s. Non-renewable AppRole / Kubernetes tokens are
+replaced by logging in again.
+
 ### Claude Desktop / Claude Code
 
 Add to your MCP client's config (Claude Desktop:
@@ -881,7 +973,11 @@ and any other scope is refused. The Sentinel rule write surface
 (create/update/delete) is *not* called by this server. Rule deployment
 happens out-of-band via `terraform apply` under a separate identity
 with elevated permissions, kept off the LLM-facing host.
-`terraform_plan` previews that apply but never runs it.
+`terraform_plan` previews that apply but never runs it. Tenants that
+source their certificate from Azure Key Vault additionally use a
+*separate* bootstrap identity scoped only to the vault
+(`https://vault.azure.net/.default`); see
+[Certificates from a secret store](#certificates-from-a-secret-store).
 
 **Certificate-based auth.** Authentication uses an X.509 certificate
 rather than a client secret. The PFX private key never leaves the host;

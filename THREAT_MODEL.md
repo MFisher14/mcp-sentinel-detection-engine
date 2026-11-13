@@ -404,12 +404,26 @@ the logs, and can mask other anomalies during a real incident.
    per-call cost an attacker can inflict is small.
 6. **Caller observability.** Every retry path produces an audit log
    record, so an operator can spot abuse.
+7. **Per-tenant token-bucket quota.** `ratelimit.RateLimiter` keeps a
+   bucket per `(tenant_key, tool_name)` (default 60 req/min, burst 10;
+   override per tenant with a `rate_limit` block in the tenants config).
+   An empty bucket fails that tenant's call with `rate_limited` before
+   any HTTP request; other tenants in the same fan-out are unaffected.
+   Tested (`test_fan_out_quota_isolated_per_tenant`).
+8. **Per-tenant circuit breaker.** After `circuit_breaker_threshold`
+   (default 5) consecutive calls end in an upstream 429 with retries
+   exhausted, the tenant cools off for `circuit_breaker_cooloff_seconds`
+   (default 300). During cool-off calls return `rate_limited`
+   immediately with no HTTP attempt. Afterwards one probe call is let
+   through. Tested (`test_breaker_short_circuits_without_http`).
+   `rate-limit-quota-exhausted` and `circuit-breaker-*` state changes
+   are audited.
 
-**Residual risk.** Abuse from a single trusted MCP client (i.e., a
-user with legitimate access to the server) is bounded but not
-prevented; the operator must monitor the audit stream. Per-tenant
-quota / circuit-breaker enforcement during fan-out is on the roadmap
-for v0.3.
+**Residual risk.** Limits are process-local: several server processes
+sharing one App Registration each get their own quota. Cluster-wide
+quota needs a shared store and is out of scope. Within one process,
+abuse from a trusted MCP client is now rate-bounded per tenant, but the
+operator should still monitor the audit stream.
 
 ---
 

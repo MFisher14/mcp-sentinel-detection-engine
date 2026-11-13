@@ -488,6 +488,35 @@ server refuses to load any looser permissions.
 }
 ```
 
+#### Per-tenant rate limits
+
+Every call that reaches Log Analytics (`dry_run_kql`, live
+`validate_kql_against_schema`) goes through a per-`(tenant, tool)` token
+bucket and a per-tenant circuit breaker. The defaults suit most
+workspaces; override them per tenant in the tenants file:
+
+```json
+"contoso": {
+  "...": "...",
+  "rate_limit": {
+    "requests_per_minute": 30,
+    "burst": 5,
+    "circuit_breaker_threshold": 3,
+    "circuit_breaker_cooloff_seconds": 300
+  }
+}
+```
+
+| Key                               | Default | Meaning                                                              |
+| --------------------------------- | ------- | -------------------------------------------------------------------- |
+| `requests_per_minute`             | 60      | Steady-state refill rate per `(tenant, tool)`.                       |
+| `burst`                           | 10      | Bucket capacity.                                                     |
+| `circuit_breaker_threshold`       | 5       | Consecutive calls ending in upstream 429 before the tenant cools off. |
+| `circuit_breaker_cooloff_seconds` | 300     | Cool-off window; calls fail fast with `rate_limited` during it.      |
+
+A tenant that runs out of quota in the middle of a `tenant: "*"` fan-out
+gets a `rate_limited` entry; the other tenants still return results.
+
 Two passphrase patterns are supported per tenant; pick **one**:
 
 - **`cert_passphrase_env`** *(recommended)* — names an environment

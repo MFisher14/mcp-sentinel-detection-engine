@@ -17,6 +17,7 @@ from . import __version__
 from .audit import audit, audit_error
 from .auth import TokenManager, build_default_token_manager
 from .errors import ErrorCode, SentinelError
+from .ratelimit import RateLimiter
 from .tool_context import ToolContext
 from .tools import convert_sigma, dry_run, emit_terraform, validate_kql
 
@@ -108,6 +109,9 @@ async def _dispatch(
 
 def build_server(token_manager: TokenManager) -> Server:
     server: Server = Server(ServerName, version=__version__)
+    # One limiter for the process lifetime: quotas and breakers must outlive
+    # the per-call ToolContext.
+    rate_limiter = RateLimiter(token_manager.rate_limit_configs())
 
     @server.list_tools()  # type: ignore[no-untyped-call,untyped-decorator]
     async def _list_tools() -> list[mcp_types.Tool]:
@@ -119,7 +123,7 @@ def build_server(token_manager: TokenManager) -> Server:
         if handler is None:
             audit_error("tool-unknown", tool=name)
             return _error_result(ErrorCode.INVALID_INPUT, f"Unknown tool: {name}")
-        async with ToolContext(token_manager) as ctx:
+        async with ToolContext(token_manager, rate_limiter=rate_limiter) as ctx:
             return await _dispatch(handler, ctx, arguments, name)
 
     return server

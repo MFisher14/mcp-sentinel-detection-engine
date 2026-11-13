@@ -490,6 +490,130 @@ to HTTP callers.
 
 ---
 
+## T9 — Management-plane scope expansion *(A1, A2)*
+
+**Scenario.** v0.3 adds `list_deployed_sentinel_rules` and
+`detect_rule_drift`, which read alert rules from Azure Resource Manager.
+That needs a token for `https://management.azure.com/.default`, which is
+far broader than the Log Analytics query scope: the same token could, if
+the App Registration held write roles, create, change or delete *any*
+ARM resource the principal can reach. Separately, rule display names,
+descriptions and queries returned by ARM are attacker-influenced
+content (A2 could have named a rule, or an insider could have edited
+one in the portal).
+
+**Why the broader scope is justified.** The Sentinel rule inventory and
+rule definitions are only exposed on the management plane; there is no
+Log Analytics data-plane equivalent. Drift detection is impossible
+without it.
+
+**Mitigations.**
+
+1. **RBAC, not the token, is the real boundary.** The documented role
+   is `Microsoft Sentinel Reader` at the workspace scope. ARM enforces
+   that on every request, so a token for a reader-only principal
+   cannot write regardless of its audience. Operators must not grant
+   the App Registration `Contributor` / `Sentinel Contributor`.
+2. **GET-only client.** `ManagementClient` exposes `get`,
+   `list_alert_rules` and `get_alert_rule` and nothing else; there is no
+   code path that sends `PUT` / `PATCH` / `DELETE` / `POST` to ARM.
+3. **Scope allowlist.** `TokenManager.get_token(scope=...)` rejects any
+   scope other than Log Analytics and `management.azure.com`. Tested
+   (`test_token_manager_rejects_unlisted_scope`). Tokens are cached per
+   `(tenant_key, scope)` so the two audiences never mix. Tested
+   (`test_token_manager_caches_per_scope`).
+4. **Server-side ARM coordinates.** `subscription_id`,
+   `resource_group` and `workspace_name` come from the tenant config,
+   are validated at load time (GUID / ARM naming rules), and are
+   URL-quoted into the path. The caller can't point a request at a
+   different subscription. A caller-supplied `rule_id` must be a GUID
+   and is URL-quoted as well. Tested
+   (`test_json_provider_validates_management_fields`,
+   `test_management_client_get_rule_quotes_id`).
+5. **Same-origin pagination.** `nextLink` cursors come from the
+   upstream response. `AzureRestClient._build_url` only follows absolute
+   URLs that start with the configured ARM base URL, so a tampered
+   cursor can't redirect the bearer token to a third-party host.
+   Tested (`test_management_client_refuses_foreign_next_link`).
+   Pagination is capped at 20 pages.
+6. **Opt-in per tenant.** Management access is only enabled for tenants
+   that configure the ARM coordinates; the others get a structured
+   `invalid_input` error without any token being minted.
+7. **Untrusted output.** `list_deployed_sentinel_rules` returns a fixed
+   summary projection (no query bodies); `detect_rule_drift` returns
+   live values only as diff data. Tool descriptions tell the model to
+   treat them as untrusted, which is the same posture as T1 / `dry_run_kql`.
+
+**Residual risk.** An operator who grants the App Registration a write
+role at subscription scope turns a prompt-injection compromise of the
+*server process* (not just the model) into ARM write access. The
+server can't detect over-privileged role assignments; that's a
+deployment review item.
+
+---
+
+## T10 — Subprocess execution and state isolation in `terraform_plan` *(A1)*
+
+**Scenario.** `terraform_plan` executes the `terraform` binary on
+model-supplied HCL. An attacker who controls the HCL could try to run
+arbitrary commands (`provisioner "local-exec"`, `data "external"`),
+read local files (`file()`, `templatefile()`), exfiltrate environment
+secrets, pull in remote code (`module` sources), or tamper with
+Terraform state. Running `apply` would turn a model-side compromise
+into a production change.
+
+**Mitigations.**
+
+1. **Strict HCL allowlist.** `hcl_parse.parse_rules` accepts only
+   top-level `resource "azurerm_sentinel_alert_rule_scheduled"` blocks
+   whose attributes are literals (strings, bools, ints, string lists,
+   heredocs) or the single reference `var.log_analytics_workspace_id`.
+   Nested blocks (`provisioner`, `lifecycle`, `dynamic`), other
+   resource types, `data` / `module` / `locals` / `provider` blocks,
+   function calls and unescaped `${` / `%{` templates are all rejected
+   before any file is written. Tested (`tests/test_hcl_parse.py`,
+   `test_plan_rejects_bad_input`).
+2. **Plan only.** The runner executes exactly `init`, `plan -lock=false
+   -out=plan.bin` and `show -json plan.bin`. There's no `apply` code
+   path. `-lock=false` means the plan identity only needs read access
+   to the state blob. Tested (`test_plan_happy_path` asserts the
+   command sequence).
+3. **No shell.** `asyncio.create_subprocess_exec` with an argv list;
+   the binary is resolved with `shutil.which`. The workspace ID is
+   validated against the ARM resource-ID shape before it goes into a
+   `-var=` argument.
+4. **Throwaway working directory.** Each run uses a fresh
+   `tempfile.mkdtemp` directory that is removed in a `finally` block,
+   including on failure and timeout. Tested (the scratch dir is gone
+   after both success and failure).
+5. **Environment allowlist, separate identity.** The child gets
+   `PATH`, `ARM_*`, proxy/TLS variables and `TF_PLUGIN_CACHE_DIR`
+   only. The server's `AZURE_*` certificate variables, passphrases and
+   tenants file are not passed, and `HOME` is set to the scratch
+   directory so Terraform can't fall back to a cached Azure CLI login.
+   The tool refuses to run if `ARM_CLIENT_ID` equals any App
+   Registration the server itself queries with. Tested
+   (`test_build_child_env_allowlist`,
+   `test_plan_rejects_same_identity`).
+6. **State isolation.** The backend comes from the operator-controlled
+   `MCP_SENTINEL_TF_BACKEND_CONFIG` file and is never model-supplied.
+   It should point at state owned by the separate plan identity; the
+   MCP server's App Registration has no access to it.
+7. **Bounded runtime.** Per-stage timeouts (init 180 s, plan 300 s,
+   show 60 s) kill the whole process group, including provider plugin
+   children. Output is truncated to 20 000 characters.
+8. **Audit.** Each invocation logs the sha256 of the input HCL, the
+   target workspace resource ID and the outcome stage.
+
+**Residual risk.** `terraform init` downloads the `azurerm` provider
+from the public registry (supply chain; use `TF_PLUGIN_CACHE_DIR` or a
+network mirror to pin it). `terraform plan` refreshes state using the
+plan identity's credentials, so that identity needs read access to the
+workspace's alert rules. Plan output includes the rule definitions,
+which the model already supplied.
+
+---
+
 ## Non-goals
 
 - **PII scrubbing inside returned rows.** The server returns whatever

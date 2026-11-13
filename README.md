@@ -659,6 +659,13 @@ pytest --cov --cov-fail-under=80
 
 CI runs on every push and PR to `main` against Python 3.11 and 3.12.
 
+The [`verify-examples`](.github/workflows/verify-examples.yml) workflow
+converts every rule under [`examples/sigma/`](examples/sigma/) on push,
+PR, and every Monday at 12:00 UTC. The weekly run exists to catch upstream
+`pysigma` / `pysigma-backend-kusto` changes that silently drop a field
+mapping the examples depend on, even when nobody is opening PRs. Run it
+locally with `pytest tests/test_examples.py -v`.
+
 ---
 
 ## Roadmap

@@ -119,15 +119,16 @@ four tools end-to-end against the seven example rules in `examples/sigma/`.
 
 ## Tools
 
-All four tools accept an optional `tenant` parameter, but only
-`dry_run_kql` actually uses it — the other three are pure functions and
-need no Azure auth. The semantics are the same as the Defender XDR
-companion:
+All tools accept an optional `tenant` parameter. `dry_run_kql` always
+uses it; `validate_kql_against_schema` uses it to opt into the live
+workspace schema; the pure tools ignore it and need no Azure auth. The
+semantics are the same as the Defender XDR companion:
 
-- **omitted** → the configured `default` tenant.
+- **omitted** → the configured `default` tenant (for
+  `validate_kql_against_schema`: the bundled offline snapshot).
 - **`"contoso"`** (or any configured key) → that specific tenant.
-- **`"*"`** → fan out across every configured tenant (only meaningful
-  for `dry_run_kql`). Bounded concurrency (5 by default). Returns
+- **`"*"`** → fan out across every configured tenant (`dry_run_kql` and
+  live `validate_kql_against_schema`). Bounded concurrency (5 by default). Returns
   labelled per-tenant results; one failing tenant does not poison the
   rest.
 
@@ -193,17 +194,30 @@ Pure function. No Azure auth required.
   "table": "SecurityEvent",
   "unknown_columns": ["AccontName", "admin"],
   "suggestions": {"AccontName": ["AccountName", "Account", "AccountType"]},
-  "metadata": {"schema_column_count": 42, "referenced_column_count": 2}
+  "metadata": {
+    "schema_column_count": 42,
+    "referenced_column_count": 2,
+    "schema_source": "bundled",
+    "snapshot_date": "2026-05-12"
+  }
 }
 ```
 
-Offline check against the bundled Log Analytics schema snapshot. No
-Azure auth required. v0.3 will offer live schema fetching via the Log
-Analytics metadata API.
+**Schema source.** With `tenant` omitted, the query is checked against
+the bundled snapshot of 13 common tables (`SecurityEvent`, `SigninLogs`,
+`AuditLogs`, ...) — offline, no Azure auth, and the response carries
+`metadata.schema_source: "bundled"` plus the `snapshot_date`. Pass
+`tenant` (or `"*"`) to validate against the **live** schema of that
+tenant's workspace instead, fetched from the Log Analytics metadata API
+(`GET /v1/workspaces/{id}/metadata`). That catches custom `*_CL` tables
+and columns added since the snapshot. Each workspace's schema is fetched
+once and cached for the server's lifetime; `metadata.schema_cache_hit`
+tells you whether this call reused it. Restart the server to refresh.
 
 Column extraction is a deliberate over-approximation: it collects every
 bare identifier that isn't a KQL keyword or a known table name, and it
-does **not** strip string literals. That is why `admin` — the *value*
+does **not** strip string literals (it does skip `//` comments, such as
+the provenance header `convert_sigma_to_kql` adds). That is why `admin` — the *value*
 being compared against, not a column — shows up in `unknown_columns`
 above. The trade-off is intentional: a false positive costs the agent one
 follow-up question, whereas missing a real typo costs a failed rule in

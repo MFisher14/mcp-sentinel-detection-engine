@@ -139,7 +139,12 @@ async def test_validate_matches_the_documented_readme_example() -> None:
         # is an over-approximation and does not strip string literals.
         "unknown_columns": ["AccontName", "admin"],
         "suggestions": {"AccontName": ["AccountName", "Account", "AccountType"]},
-        "metadata": {"schema_column_count": 42, "referenced_column_count": 2},
+        "metadata": {
+            "schema_column_count": 42,
+            "referenced_column_count": 2,
+            "schema_source": "bundled",
+            "snapshot_date": "2026-05-12",
+        },
     }
 
 

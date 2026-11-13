@@ -33,3 +33,9 @@ def get_table_columns(table: str) -> dict[str, str] | None:
     if not isinstance(columns, dict):
         return None
     return {str(k): str(v) for k, v in columns.items()}
+
+
+def snapshot_date() -> str | None:
+    meta = load_schema().get("_meta", {})
+    value = meta.get("snapshot_date") if isinstance(meta, dict) else None
+    return str(value) if value is not None else None

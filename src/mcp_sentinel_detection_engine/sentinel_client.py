@@ -77,6 +77,10 @@ class SentinelClient(AbstractAsyncContextManager["SentinelClient"]):
     def workspace_id(self) -> str:
         return self._workspace_id
 
+    @property
+    def tenant_key(self) -> str:
+        return self._tenant_key
+
     async def __aenter__(self) -> Self:
         return self
 
@@ -110,6 +114,11 @@ class SentinelClient(AbstractAsyncContextManager["SentinelClient"]):
             body["timespan"] = timespan
         headers = {"Prefer": f"wait={server_timeout_seconds}"}
         return await self._request("POST", path, json=body, extra_headers=headers)
+
+    async def metadata(self) -> dict[str, Any]:
+        """Fetch the workspace schema (tables + columns) from the metadata API."""
+        path = f"/v1/workspaces/{self._workspace_id}/metadata"
+        return await self._request("GET", path)
 
     async def _request(
         self,

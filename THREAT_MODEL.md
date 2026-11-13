@@ -348,6 +348,32 @@ per-tenant `await`.
 
 ---
 
+## T6a — Sensitive custom table names via live schema metadata *(A1)*
+
+**Scenario.** `validate_kql_against_schema` with `tenant` set fetches
+the workspace's full table list from `GET /v1/workspaces/{id}/metadata`.
+Custom table names (`CompanyXSecretEvents_CL`) can themselves reveal
+sensitive information, and the metadata body is upstream-controlled.
+
+**Mitigations.**
+
+1. **Same trust as query rows.** `live_schema.parse_metadata` keeps only
+   names matching the KQL identifier pattern and drops everything else.
+2. **No enumeration through errors.** An unknown table in live mode
+   returns "does not exist in this tenant's workspace" without listing
+   the live tables (the bundled-snapshot error still lists the public
+   snapshot tables). Tested
+   (`test_live_schema_unknown_table_does_not_leak_table_names`).
+3. **Audit the fetch, not the body.** `schema-fetched` records the
+   tenant and table *count* only.
+4. **Opt-in.** Omitting `tenant` keeps the tool pure and offline.
+
+**Residual risk.** A caller with access to a tenant can confirm whether a
+specific table exists by naming it. That is no more than `dry_run_kql`
+already reveals with the same credentials.
+
+---
+
 ## T7 — Rate-limit abuse against Log Analytics *(A1)*
 
 **Scenario.** An adversary triggers many `dry_run_kql` calls — either

@@ -6,7 +6,10 @@
       "client_id": "22222222-2222-2222-2222-222222222222",
       "cert_path": "/secrets/contoso.pfx",
       "cert_passphrase_env": "CONTOSO_CERT_PASS",
-      "workspace_id": "55555555-5555-5555-5555-555555555555"
+      "workspace_id": "55555555-5555-5555-5555-555555555555",
+      "subscription_id": "77777777-7777-7777-7777-777777777777",
+      "resource_group": "rg-contoso-sentinel",
+      "workspace_name": "law-contoso-sentinel"
     },
     "fabrikam": {
       "tenant_id": "33333333-3333-3333-3333-333333333333",

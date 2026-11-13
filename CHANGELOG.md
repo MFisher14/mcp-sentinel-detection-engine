@@ -35,6 +35,22 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `sigma_id` per query. `MCP_SENTINEL_THREAT_MODEL_REF` overrides the
   reference. `validate_kql_against_schema` skips `//` comments when
   extracting columns, so the header is not reported. (#21)
+- `list_deployed_sentinel_rules`: read-only inventory of deployed Sentinel
+  analytics rules with `enabled` / `severity` / `kind` / `limit` filters and
+  tenant fan-out (#7).
+- `detect_rule_drift`: field-by-field diff of checked-in rule HCL against the
+  live rule, with `high_priority` flagging for `enabled` / `query` /
+  `severity` / `tactics` / `techniques` (#6).
+- `terraform_plan`: `terraform plan` (never `apply`) in a throwaway directory
+  under a separate `ARM_*` identity and an operator-configured backend (#5).
+- `link_hunt_to_rule`: Defender XDR Advanced Hunting query → Sentinel KQL plus
+  a Sigma skeleton, for closed-loop tuning with `mcp-defender-xdr` (#8).
+- Optional per-tenant management-plane config (`subscription_id`,
+  `resource_group`, `workspace_name` / `SENTINEL_*` env vars) and a GET-only
+  Azure Resource Manager client. `TokenManager` now caches tokens per
+  `(tenant, scope)` for the Log Analytics and `management.azure.com` scopes.
+- `THREAT_MODEL.md` T9 (management-plane scope) and T10 (`terraform_plan`
+  subprocess and state isolation).
 
 ## [0.2.0] - 2026-09-05
 
@@ -98,6 +114,12 @@ keeps working.
   credentials.
 
 ### Security
+
+- `generate_sentinel_terraform` now escapes `${` / `%{` inside the query
+  heredoc. HCL heredocs are templates, so a query containing
+  `${file("/etc/passwd")}` was previously emitted as a live interpolation.
+- HTTP clients only follow absolute (pagination) URLs back to the configured
+  API origin, so a tampered `nextLink` can't redirect a bearer token.
 
 - Known transitive vulnerability in `diskcache` (≤5.6.3, CVE-2025-69872):
   pickle-based serialisation can enable RCE for an attacker who already

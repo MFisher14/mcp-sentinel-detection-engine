@@ -24,6 +24,9 @@ from .ratelimit import RateLimitConfig, parse_rate_limits
 DEFAULT_LOGANALYTICS_RESOURCE = "https://api.loganalytics.io"
 DEFAULT_LOGANALYTICS_SCOPE = f"{DEFAULT_LOGANALYTICS_RESOURCE}/.default"
 
+DEFAULT_MANAGEMENT_RESOURCE = "https://management.azure.com"
+DEFAULT_MANAGEMENT_SCOPE = f"{DEFAULT_MANAGEMENT_RESOURCE}/.default"
+
 DEFAULT_TENANT_KEY = "default"
 
 _REFRESH_LEEWAY_SECONDS = 60
@@ -32,6 +35,56 @@ _TENANT_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _GUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+# Azure resource-group names: 1-90 chars of alphanumerics, '-', '_', '.', '(' and ')';
+# may not end in a period.
+_RESOURCE_GROUP_RE = re.compile(r"^[-\w.()]{0,89}[-\w()]$")
+# Log Analytics workspace names: 4-63 chars, alphanumerics and '-', must start
+# and end with an alphanumeric.
+_WORKSPACE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{2,61}[A-Za-z0-9]$")
+
+
+@dataclass(frozen=True)
+class ManagementTarget:
+    """Azure Resource Manager coordinates of a Sentinel-enabled workspace."""
+
+    subscription_id: str
+    resource_group: str
+    workspace_name: str
+
+    @property
+    def workspace_resource_id(self) -> str:
+        return (
+            f"/subscriptions/{self.subscription_id}/resourceGroups/{self.resource_group}"
+            f"/providers/Microsoft.OperationalInsights/workspaces/{self.workspace_name}"
+        )
+
+
+def _parse_management_target(
+    subscription_id: object,
+    resource_group: object,
+    workspace_name: object,
+    *,
+    source: str,
+) -> ManagementTarget | None:
+    """Validate the optional management-plane trio; all-or-nothing."""
+    values = (subscription_id, resource_group, workspace_name)
+    if all(v is None or v == "" for v in values):
+        return None
+    if not all(isinstance(v, str) and v.strip() for v in values):
+        raise AuthError(
+            f"subscription_id, resource_group and workspace_name must all be set "
+            f"together ({source})"
+        )
+    sub = str(subscription_id).strip()
+    rg = str(resource_group).strip()
+    ws = str(workspace_name).strip()
+    if not _GUID_RE.match(sub):
+        raise AuthError(f"subscription_id must be a GUID ({source})")
+    if not _RESOURCE_GROUP_RE.match(rg):
+        raise AuthError(f"resource_group is not a valid Azure resource group name ({source})")
+    if not _WORKSPACE_NAME_RE.match(ws):
+        raise AuthError(f"workspace_name is not a valid Log Analytics workspace name ({source})")
+    return ManagementTarget(subscription_id=sub, resource_group=rg, workspace_name=ws)
 
 
 @dataclass(frozen=True)
@@ -43,6 +96,7 @@ class AzureCredentials:
     cert_path: str
     workspace_id: str
     cert_passphrase: str | None = None
+    management: ManagementTarget | None = None
 
     def __repr__(self) -> str:
         passphrase_repr = "None" if self.cert_passphrase is None else "'***REDACTED***'"
@@ -50,7 +104,7 @@ class AzureCredentials:
             f"AzureCredentials(tenant_id={self.tenant_id!r}, "
             f"client_id={self.client_id!r}, cert_path={self.cert_path!r}, "
             f"workspace_id={self.workspace_id!r}, "
-            f"cert_passphrase={passphrase_repr})"
+            f"cert_passphrase={passphrase_repr}, management={self.management!r})"
         )
 
     @property
@@ -101,6 +155,11 @@ class EnvCredentialProvider(CredentialProvider):
         "SENTINEL_WORKSPACE_ID",
     )
     PASSPHRASE_VAR = "AZURE_CERT_PASSPHRASE"  # noqa: S105
+    MANAGEMENT_VARS = (
+        "SENTINEL_SUBSCRIPTION_ID",
+        "SENTINEL_RESOURCE_GROUP",
+        "SENTINEL_WORKSPACE_NAME",
+    )
 
     def __init__(self, env: dict[str, str] | None = None) -> None:
         source: dict[str, str] = dict(env) if env is not None else dict(os.environ)
@@ -117,12 +176,17 @@ class EnvCredentialProvider(CredentialProvider):
             source["SENTINEL_WORKSPACE_ID"], source="SENTINEL_WORKSPACE_ID"
         )
         passphrase = source.get(self.PASSPHRASE_VAR) or None
+        management = _parse_management_target(
+            *(source.get(name) for name in self.MANAGEMENT_VARS),
+            source="SENTINEL_SUBSCRIPTION_ID / SENTINEL_RESOURCE_GROUP / SENTINEL_WORKSPACE_NAME",
+        )
         self._credentials = AzureCredentials(
             tenant_id=source["AZURE_TENANT_ID"].strip(),
             client_id=source["AZURE_CLIENT_ID"].strip(),
             cert_path=cert_path,
             workspace_id=workspace_id,
             cert_passphrase=passphrase,
+            management=management,
         )
 
     def get_credentials(self, tenant_key: str = DEFAULT_TENANT_KEY) -> AzureCredentials:
@@ -198,12 +262,19 @@ class JsonFileCredentialProvider(CredentialProvider):
             _require_pfx_readable(cert_path, source=f"tenant '{key}'")
             workspace_id = _validate_workspace_id(workspace_id_raw, source=f"tenant '{key}'")
             passphrase = JsonFileCredentialProvider._resolve_passphrase(key, entry, env_source)
+            management = _parse_management_target(
+                entry.get("subscription_id"),
+                entry.get("resource_group"),
+                entry.get("workspace_name"),
+                source=f"tenant '{key}'",
+            )
             parsed[key] = AzureCredentials(
                 tenant_id=tenant_id.strip(),
                 client_id=client_id.strip(),
                 cert_path=cert_path,
                 workspace_id=workspace_id,
                 cert_passphrase=passphrase,
+                management=management,
             )
 
         default_key = data.get("default")
@@ -309,6 +380,7 @@ class TokenManager:
     ) -> None:
         self._credential_provider = credential_provider
         self._scope = scope
+        self._allowed_scopes = frozenset({scope, DEFAULT_MANAGEMENT_SCOPE})
         self._msal_factory = msal_factory or _default_msal_factory
         self._time_source: Callable[[], float] = time_source or time.time
         self._cache: dict[tuple[str, str], _CachedToken] = {}
@@ -332,22 +404,31 @@ class TokenManager:
     def get_credentials(self, tenant_key: str = DEFAULT_TENANT_KEY) -> AzureCredentials:
         return self._credential_provider.get_credentials(tenant_key)
 
-    def get_token(self, tenant_key: str = DEFAULT_TENANT_KEY) -> str:
-        cache_key = (tenant_key, self._scope)
+    def get_token(self, tenant_key: str = DEFAULT_TENANT_KEY, *, scope: str | None = None) -> str:
+        """Return a cached-or-fresh token for ``(tenant_key, scope)``.
+
+        ``scope`` defaults to the manager's primary scope (Log Analytics). The
+        only other scope the server requests is :data:`DEFAULT_MANAGEMENT_SCOPE`
+        for the read-only Sentinel management-plane tools.
+        """
+        effective_scope = scope or self._scope
+        if effective_scope not in self._allowed_scopes:
+            raise AuthError("Requested OAuth scope is not permitted by this server")
+        cache_key = (tenant_key, effective_scope)
         now = self._time_source()
         with self._lock:
             cached = self._cache.get(cache_key)
             if cached is not None and cached.is_fresh(now):
                 return cached.access_token
-            new_token = self._acquire(tenant_key)
+            new_token = self._acquire(tenant_key, effective_scope)
             self._cache[cache_key] = new_token
             return new_token.access_token
 
-    def invalidate(self, tenant_key: str = DEFAULT_TENANT_KEY) -> None:
+    def invalidate(self, tenant_key: str = DEFAULT_TENANT_KEY, *, scope: str | None = None) -> None:
         with self._lock:
-            self._cache.pop((tenant_key, self._scope), None)
+            self._cache.pop((tenant_key, scope or self._scope), None)
 
-    def _acquire(self, tenant_key: str) -> _CachedToken:
+    def _acquire(self, tenant_key: str, scope: str) -> _CachedToken:
         credentials = self._credential_provider.get_credentials(tenant_key)
         app = self._apps.get(tenant_key)
         if app is None:
@@ -358,7 +439,7 @@ class TokenManager:
             )
             self._apps[tenant_key] = app
 
-        result = app.acquire_token_for_client(scopes=[self._scope])
+        result = app.acquire_token_for_client(scopes=[scope])
 
         if not isinstance(result, dict) or "access_token" not in result:
             error_code = result.get("error") if isinstance(result, dict) else "unknown_error"

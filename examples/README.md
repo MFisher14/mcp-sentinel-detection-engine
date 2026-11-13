@@ -55,7 +55,7 @@ client.
    install in step 1 is required. See
    [PyPI installation](../README.md#pypi-installation-not-yet-available).
 
-   Restart Claude Desktop and you should see four tools advertised under
+   Restart Claude Desktop and you should see eight tools advertised under
    `sentinel-detection-engine`. To additionally exercise `dry_run_kql`
    against a live workspace, add the `AZURE_*` and `SENTINEL_WORKSPACE_ID`
    env vars from the top-level [`README.md`](../README.md#configuration).

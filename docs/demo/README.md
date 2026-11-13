@@ -15,7 +15,8 @@ Three edits were made after recording: the local checkout path was replaced
 with a same-length placeholder (`/home/detection-engr/`), idle gaps were
 capped at 1.5 s, and the prompt typing was sped up from ~25 s to 2 s with a
 3 s pause on the finished prompt (`tools/retime.py`). Claude's output is
-untouched.
+untouched. The GIF also plays at 2× (the reading pause on the prompt is
+kept) and holds the final summary for 12 s before looping.
 
 Play it locally with `asciinema play docs/demo/sentinel-pipeline.cast`.
 
@@ -34,8 +35,9 @@ throwaway venv, not the project's):
    the typing so viewers aren't waiting on keystrokes. `<submit>` is any
    time after the last keystroke and before Claude echoes the prompt.
 4. `tools/snap.py` renders one frame to HTML and `tools/gifframes.py`
-   renders all frames. Screenshot them with headless Chrome and encode the
-   GIF with ffmpeg.
+   renders all frames at 2×. Screenshot them with headless Chrome and
+   encode the GIF with ffmpeg; the command, including the 12 s end hold,
+   is in the `gifframes.py` docstring.
 
 ## Recording it yourself in Claude Desktop
 

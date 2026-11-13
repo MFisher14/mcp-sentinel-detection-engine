@@ -2,8 +2,8 @@
 
 ## Included recording (Claude Code)
 
-`sentinel-pipeline.cast` (asciicast v2, ~62 s) and `sentinel-pipeline.gif`
-are a real, unedited Claude Code session driving all four tools against
+`sentinel-pipeline.cast` (asciicast v2, ~41 s) and `sentinel-pipeline.gif`
+are a real Claude Code session driving all four tools against
 `examples/sigma/failed_logon_burst.yml`. The PNGs are frames from that
 session.
 
@@ -11,9 +11,11 @@ session.
 [`demo_server.py`](demo_server.py), which runs the production server with
 all-zero placeholder IDs, a stub token, and an in-process mock Log Analytics
 API that returns fictional rows (RFC 5737 TEST-NET IPs, `contoso.local`).
-Two edits were made after recording: the local checkout path was replaced
-with a same-length placeholder (`/home/detection-engr/`), and idle gaps
-were capped at 1.5 s.
+Three edits were made after recording: the local checkout path was replaced
+with a same-length placeholder (`/home/detection-engr/`), idle gaps were
+capped at 1.5 s, and the prompt typing was sped up from ~25 s to 2 s with a
+3 s pause on the finished prompt (`tools/retime.py`). Claude's output is
+untouched.
 
 Play it locally with `asciinema play docs/demo/sentinel-pipeline.cast`.
 
@@ -28,7 +30,10 @@ throwaway venv, not the project's):
 2. Scrub local paths and identifiers from the cast. Check it with
    `grep -i "$USER" out.cast` before committing; asciinema records raw
    terminal bytes.
-3. `tools/snap.py` renders one frame to HTML and `tools/gifframes.py`
+3. `tools/retime.py in.cast out.cast <type-start> <submit> 2 3` compresses
+   the typing so viewers aren't waiting on keystrokes. `<submit>` is any
+   time after the last keystroke and before Claude echoes the prompt.
+4. `tools/snap.py` renders one frame to HTML and `tools/gifframes.py`
    renders all frames. Screenshot them with headless Chrome and encode the
    GIF with ffmpeg.
 

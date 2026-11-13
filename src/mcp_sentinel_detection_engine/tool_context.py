@@ -9,6 +9,8 @@ from typing import Self
 import httpx
 
 from .auth import TokenManager
+from .errors import InvalidInputError
+from .management_client import ManagementClient
 from .ratelimit import RateLimiter
 from .sentinel_client import SentinelClient
 
@@ -61,6 +63,27 @@ class ToolContext(AbstractAsyncContextManager["ToolContext"]):
         return SentinelClient(
             self._token_manager,
             workspace_id=credentials.workspace_id,
+            http_client=self._http,
+            tenant_key=tenant_key,
+        )
+
+    def management_client_for(self, tenant_key: str) -> ManagementClient:
+        """Return a GET-only Sentinel management-plane client for ``tenant_key``.
+
+        Raises ``InvalidInputError`` if the tenant has no ``subscription_id`` /
+        ``resource_group`` / ``workspace_name`` configured.
+        """
+        credentials = self._token_manager.get_credentials(tenant_key)
+        if credentials.management is None:
+            raise InvalidInputError(
+                "This tenant is not configured for Sentinel management-plane access; "
+                "set subscription_id, resource_group and workspace_name in the tenant "
+                "config (or SENTINEL_SUBSCRIPTION_ID / SENTINEL_RESOURCE_GROUP / "
+                "SENTINEL_WORKSPACE_NAME)."
+            )
+        return ManagementClient(
+            self._token_manager,
+            target=credentials.management,
             http_client=self._http,
             tenant_key=tenant_key,
         )

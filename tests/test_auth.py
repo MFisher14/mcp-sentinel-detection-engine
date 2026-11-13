@@ -15,8 +15,10 @@ from mcp_sentinel_detection_engine.auth import (
     AzureCredentials,
     EnvCredentialProvider,
     JsonFileCredentialProvider,
+    LazyCredentialProvider,
     TokenManager,
     _build_client_credential,
+    build_default_token_manager,
 )
 from mcp_sentinel_detection_engine.errors import AuthError
 
@@ -617,3 +619,69 @@ def test_token_manager_per_tenant_cache_isolation() -> None:
     assert manager.get_token("a") == "token-ca"
     assert manager.get_token("b") == "token-cb"
     assert manager.get_token("a") == "token-ca"
+
+
+# ---------- LazyCredentialProvider ----------
+
+
+def test_lazy_provider_does_not_call_factory_until_used() -> None:
+    calls: list[int] = []
+
+    def factory() -> EnvCredentialProvider:
+        calls.append(1)
+        raise AuthError("credentials are not configured")
+
+    provider = LazyCredentialProvider(factory)
+    assert calls == []
+
+    with pytest.raises(AuthError, match="not configured"):
+        provider.get_credentials()
+    assert calls == [1]
+
+
+def test_lazy_provider_keeps_raising_for_a_misconfigured_host() -> None:
+    def factory() -> EnvCredentialProvider:
+        raise AuthError("credentials are not configured")
+
+    provider = LazyCredentialProvider(factory)
+    for _ in range(3):
+        with pytest.raises(AuthError):
+            provider.list_tenants()
+        with pytest.raises(AuthError):
+            _ = provider.default_tenant_key
+
+
+def test_lazy_provider_resolves_once_and_delegates(tmp_path: Path) -> None:
+    pfx = tmp_path / "app.pfx"
+    pfx.write_bytes(b"\x00")
+    calls: list[int] = []
+
+    def factory() -> EnvCredentialProvider:
+        calls.append(1)
+        return EnvCredentialProvider(_base_env(pfx))
+
+    provider = LazyCredentialProvider(factory)
+    creds = provider.get_credentials()
+
+    assert creds.tenant_id == "tenant-abc"
+    assert creds.workspace_id == _VALID_GUID
+    assert provider.list_tenants() == ["default"]
+    assert provider.default_tenant_key == "default"
+    # Resolved exactly once and memoised across every delegated call.
+    assert calls == [1]
+
+
+def test_build_default_token_manager_starts_without_azure_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unconfigured host must still get a usable server; only dry_run_kql fails."""
+    for var in (*EnvCredentialProvider.REQUIRED_VARS, "MCP_SENTINEL_TENANTS_FILE"):
+        monkeypatch.delenv(var, raising=False)
+
+    manager = build_default_token_manager()
+
+    # Construction succeeds — this is what keeps the three pure tools alive.
+    assert isinstance(manager, TokenManager)
+    # The missing configuration surfaces only when a credential is demanded.
+    with pytest.raises(AuthError, match="Missing required Azure credential"):
+        manager.get_credentials()

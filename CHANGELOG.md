@@ -6,29 +6,217 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- `validate_kql_against_schema` validates against the live workspace
+  schema from the Log Analytics metadata API when `tenant` is set
+  (including `"*"` fan-out), cached per tenant for the process lifetime.
+  The bundled snapshot remains the offline default; responses report
+  `metadata.schema_source`. THREAT_MODEL adds T6a. (#1)
+- Streamable HTTP transport (SSE response streams) at `/mcp` via
+  `--transport http` / `MCP_SENTINEL_TRANSPORT=http`. stdio remains the
+  default. Every audit line now carries a `transport` field. (#2)
+- Mandatory bearer-token (JWT) auth for the HTTP transport: HS256 shared
+  secret or RS256/ES256 public key, required `iss`/`aud`/`iat`/`exp`/`jti`,
+  15-minute max lifetime, optional single-use `jti`, DNS-rebinding
+  protection. `examples/mint_http_token.py` is a reference minter.
+  THREAT_MODEL adds A4 and T8. (#3)
+- Per-tenant token-bucket quota per `(tenant, tool)` and a per-tenant
+  circuit breaker that short-circuits calls after repeated upstream 429s,
+  configurable via a `rate_limit` block per tenant. THREAT_MODEL T7
+  updated. (#4)
+- `verify-examples` GitHub Actions workflow: converts every bundled Sigma
+  example on push, PR, and weekly (Mon 12:00 UTC). (#19)
+- Demo recording (`docs/demo/`): asciicast, GIF, and screenshots of a real
+  Claude Code session driving all four tools against a mocked workspace,
+  embedded in the README. (#20)
+- `convert_sigma_to_kql` prepends a `//` provenance header to every query
+  (server version, threat-model reference, Sigma rule id) and returns
+  `sigma_id` per query. `MCP_SENTINEL_THREAT_MODEL_REF` overrides the
+  reference. `validate_kql_against_schema` skips `//` comments when
+  extracting columns, so the header is not reported. (#21)
+- `list_deployed_sentinel_rules`: read-only inventory of deployed Sentinel
+  analytics rules with `enabled` / `severity` / `kind` / `limit` filters and
+  tenant fan-out (#7).
+- `detect_rule_drift`: field-by-field diff of checked-in rule HCL against the
+  live rule, with `high_priority` flagging for `enabled` / `query` /
+  `severity` / `tactics` / `techniques` (#6).
+- `terraform_plan`: `terraform plan` (never `apply`) in a throwaway directory
+  under a separate `ARM_*` identity and an operator-configured backend (#5).
+- `link_hunt_to_rule`: Defender XDR Advanced Hunting query → Sentinel KQL plus
+  a Sigma skeleton, for closed-loop tuning with `mcp-defender-xdr` (#8).
+- Optional per-tenant management-plane config (`subscription_id`,
+  `resource_group`, `workspace_name` / `SENTINEL_*` env vars) and a GET-only
+  Azure Resource Manager client. `TokenManager` now caches tokens per
+  `(tenant, scope)` for the Log Analytics and `management.azure.com` scopes.
+- `THREAT_MODEL.md` T9 (management-plane scope) and T10 (`terraform_plan`
+  subprocess and state isolation).
+- `CredentialProvider.get_pfx_bytes()` lets a provider supply the App
+  Registration PFX from memory instead of `cert_path` (#9).
+  `AzureCredentials.cert_path` is now optional for such tenants.
+- Azure Key Vault certificate source. A `key_vault` block per tenant in the
+  tenants JSON, with a managed-identity or separate-App-Registration
+  bootstrap identity (#10).
+- HashiCorp Vault KV-v2 certificate source. A `vault` block per tenant,
+  with token (optionally response-wrapped), AppRole, or Kubernetes auth
+  and automatic `renew-self` (#11).
+- Certificate rotation: secret-store PFXs are re-fetched hourly and the
+  MSAL app is rebuilt when the certificate changes.
+- `THREAT_MODEL.md` T11 covers secret-store retrieval and the
+  bootstrap-identity boundary.
+
+## [0.2.0] - 2026-09-05
+
+A build-repair, correctness and documentation release. No breaking
+changes to the tool surface or config schema; every v0.1.0 client config
+keeps working.
+
+### Changed
+
+- `__version__` is now resolved from installed distribution metadata via
+  `importlib.metadata` rather than being a hardcoded literal, so
+  `pyproject.toml` is the single source of truth and the two cannot drift
+  apart. An uninstalled source checkout with no distribution metadata
+  reports `0.0.0+unknown` instead of raising at import time.
+- Roadmap references that previously named v0.2 now name v0.3, since the
+  features they describe (live schema fetching via the Log Analytics
+  metadata API, HTTP/SSE transport, the `mcp` 2.x migration, and the
+  `diskcache` fix) are not in this release.
+
+### Fixed
+
+- **The server now starts without Azure credentials, as documented.** It
+  previously did not: startup built the credential provider eagerly, so a
+  host with no `AZURE_*` variables exited with code 2 before serving
+  anything — taking down the three pure tools that never touch Azure
+  along with the one that does. Credential resolution is now deferred to
+  first use, so an unconfigured host starts, advertises all four tools,
+  and serves `convert_sigma_to_kql`, `validate_kql_against_schema` and
+  `generate_sentinel_terraform`. Only `dry_run_kql` reports the missing
+  configuration, as an `auth_failure` result rather than a dead server.
+  This makes the documented no-credentials Quickstart work for the first
+  time.
+- Pinned `mcp` to `>=1.0.0,<2.0.0`. The constraint was unbounded, and
+  `mcp` 2.x renames the protocol field names (`inputSchema` →
+  `input_schema`, `structuredContent` → `structured_content`, `isError` →
+  `is_error`), so a fresh install resolved to 2.x and broke the build
+  with 18 `mypy --strict` errors and 2 failing tests. Lifting the bound
+  needs the matching rename in `server.py`; tracked for v0.3.
+
+### Documentation
+
+- Installation now leads with the from-source path, which is the only one
+  that works — the package is not published to PyPI. The `uvx` and `pip
+  install` commands moved under a heading marking them unavailable, and
+  the Claude Desktop / Claude Code config snippets in both `README.md`
+  and `examples/README.md` gained working from-source invocations
+  (console script and `python -m`), with the `uvx` form kept alongside as
+  future. Previously the README contradicted itself: Installation offered
+  commands that fail while the Quickstart directly above used the
+  from-source path.
+- Corrected the documented `validate_kql_against_schema` output, which
+  did not match the tool's actual response, and documented why: column
+  extraction is a deliberate over-approximation that does not strip
+  string literals, so a compared-against value is reported alongside a
+  real typo. A test now pins the whole documented payload.
+- Expanded the v0.1.0 changelog entry from a single bullet into per-tool
+  descriptions.
+- Added `docs/demo/README.md` — a reproducible four-turn script,
+  capture and encoding settings, and embed markdown for a GIF of the
+  full Sigma → KQL → validate → Terraform loop running with no Azure
+  credentials.
+
 ### Security
+
+- `generate_sentinel_terraform` now escapes `${` / `%{` inside the query
+  heredoc. HCL heredocs are templates, so a query containing
+  `${file("/etc/passwd")}` was previously emitted as a live interpolation.
+- HTTP clients only follow absolute (pagination) URLs back to the configured
+  API origin, so a tampered `nextLink` can't redirect a bearer token.
 
 - Known transitive vulnerability in `diskcache` (≤5.6.3, CVE-2025-69872):
   pickle-based serialisation can enable RCE for an attacker who already
   has local write access to the cache directory. Pulled in via
   `pysigma`'s parsed-rule cache. No fixed upstream version is published.
   The pip-audit CI job allow-lists this CVE explicitly; revisit when a
-  fix lands or `pysigma` migrates off `diskcache`. Tracked for v0.2.
+  fix lands or `pysigma` migrates off `diskcache`. Tracked for v0.3.
 
 ## [0.1.0] - 2026-05-12
 
+Initial release. An MCP server, stdio-only, exposing the Sigma → KQL →
+validate → Terraform detection-engineering loop as four tools. Three of
+the four are pure functions, so the full authoring loop runs with **no
+Azure credentials**; only `dry_run_kql` needs a tenant.
+
 ### Added
 
-- Initial release. Four MCP tools: `convert_sigma_to_kql`,
-  `validate_kql_against_schema`, `dry_run_kql`, `generate_sentinel_terraform`.
-- pySigma + `pysigma-backend-kusto` (`azure_monitor` pipeline) for Sigma → KQL
-  conversion.
-- MSAL certificate-credentials authentication with per-tenant token cache.
-- Multi-tenant fan-out with bounded concurrency.
-- HCL-injection-safe Terraform emission for `azurerm_sentinel_alert_rule_scheduled`.
-- 405-line threat model (`THREAT_MODEL.md`) covering T1–T7 with named code
-  locations and test cases.
-- 135 tests, 86% coverage. `ruff` + `mypy --strict` clean.
+#### Tools
 
-[Unreleased]: https://github.com/MFisher14/mcp-sentinel-detection-engine/compare/v0.1.0...HEAD
+- **`convert_sigma_to_kql`** — convert a Sigma rule to Sentinel KQL via
+  pySigma and `pysigma-backend-kusto`'s `azure_monitor` pipeline. Accepts
+  either inline `sigma_yaml` or a `sigma_path` (exactly one, never both).
+  Windows logsources auto-map to `SecurityEvent`; cloud logsources
+  (`signinlogs`, `auditlogs`, `officeactivity`, `azureactivity`,
+  `commonsecuritylog`, `syslog`) take an explicit `target_table`. Returns
+  every generated query with its resolved target table and any backend
+  warnings. Pure function — no Azure auth.
+- **`validate_kql_against_schema`** — statically check the columns a query
+  references against a bundled Log Analytics schema snapshot (13 tables,
+  captured 2026-05-12). Returns `valid`, the `unknown_columns` list, and
+  `difflib`-derived `suggestions` for each miss (`LogonTpye` →
+  `LogonType`), so a typo is caught before it costs a workspace
+  round-trip. Pure function — no Azure auth. v0.3 will fetch the live
+  schema via the Log Analytics metadata API.
+- **`dry_run_kql`** — smoke-test a query against a real Sentinel
+  workspace, read-only by construction: `row_limit` capped at 10, a
+  60-second server timeout, queries over 10,000 chars rejected, and
+  destructive KQL control verbs (`.drop`, `.alter`, `.ingest`,
+  `.external_table`, `.purge`, …) refused before any HTTP call. The only
+  tool that needs Azure credentials.
+- **`generate_sentinel_terraform`** — emit an
+  `azurerm_sentinel_alert_rule_scheduled` block from a validated query
+  plus rule metadata (severity, ISO-8601 frequency/period, trigger
+  operator and threshold, MITRE ATT&CK tactics and techniques). The HCL
+  references `var.log_analytics_workspace_id` so one module applies to any
+  workspace, and the resource GUID is derived server-side from a stable
+  namespace UUID rather than caller input. Emission only — `terraform
+  apply` stays a human-gated step under separate credentials. Pure
+  function — no Azure auth.
+
+#### Tenancy and auth
+
+- MSAL certificate client-credentials authentication (X.509, not a client
+  secret), with an in-memory per-`(tenant_key, scope)` token cache
+  refreshed 60 s before expiry. Nothing written to disk.
+- Single-tenant configuration via `AZURE_*` / `SENTINEL_WORKSPACE_ID`
+  environment variables, or multi-tenant via a `chmod 0600` JSON config
+  file. Startup fails fast with exit code 2 on a missing or malformed
+  variable.
+- Multi-tenant fan-out (`tenant: "*"`) with bounded concurrency, default
+  5. Results are labelled with the server-side tenant key, never one
+  derived from an upstream response, and one failing tenant does not
+  poison the rest.
+
+#### Safety and observability
+
+- Every tool input is parsed and validated before use; HCL emission
+  escapes caller-supplied strings against injection.
+- JSON-lines audit log on stderr recording tool name, tenant, sanitised
+  parameters, duration, outcome, and result counts — never tokens,
+  passphrases, certificate contents, or returned row data. stdout is
+  reserved for the MCP stdio protocol.
+- 405-line threat model (`THREAT_MODEL.md`) covering T1–T7 with named
+  code locations and the test cases that exercise each mitigation.
+
+#### Examples and quality
+
+- Seven example Sigma rules under `examples/sigma/` covering each
+  `azure_monitor` pipeline mapping, including an adversarial rule that
+  carries a prompt-injection payload, zero-width spaces, and a bidi
+  override as the demo asset for threat-model T1.
+- 135 tests at 86% coverage; `ruff` and `mypy --strict` clean on Python
+  3.11 and 3.12.
+
+[Unreleased]: https://github.com/MFisher14/mcp-sentinel-detection-engine/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/MFisher14/mcp-sentinel-detection-engine/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/MFisher14/mcp-sentinel-detection-engine/releases/tag/v0.1.0

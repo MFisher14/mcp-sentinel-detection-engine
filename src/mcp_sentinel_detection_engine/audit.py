@@ -15,6 +15,15 @@ from typing import Any
 _LOGGER_NAME = "mcp_sentinel_detection_engine.audit"
 _ENV_LEVEL = "MCP_SENTINEL_LOG_LEVEL"
 
+# Set once at startup by the server entry point so every audit line records
+# which transport the call arrived on ("stdio" or "http").
+_transport: str | None = None
+
+
+def set_transport(name: str | None) -> None:
+    global _transport
+    _transport = name
+
 
 class _JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -24,6 +33,8 @@ class _JsonFormatter(logging.Formatter):
             "logger": record.name,
             "event": record.getMessage(),
         }
+        if _transport is not None:
+            payload["transport"] = _transport
         extra = getattr(record, "audit_fields", None)
         if isinstance(extra, dict):
             payload.update(extra)

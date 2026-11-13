@@ -7,12 +7,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..audit import audit, audit_error
-from ..errors import ErrorCode, InvalidInputError, SentinelError
+from ..errors import ErrorCode, InvalidInputError, RateLimitedError, SentinelError
 from ..sentinel_client import SentinelClient
 from ..tool_context import ToolContext
 from ..validation import FAN_OUT_TENANT
 
 TenantCall = Callable[[SentinelClient], Awaitable[dict[str, Any]]]
+ClientFactory = Callable[[str], Any]
 
 
 def resolve_targets(ctx: ToolContext, tenant: str | None) -> list[str]:
@@ -33,19 +34,40 @@ async def dispatch(
     ctx: ToolContext,
     tool_name: str,
     targets: list[str],
-    call: TenantCall,
+    call: Callable[[Any], Awaitable[dict[str, Any]]],
+    *,
+    client_factory: ClientFactory | None = None,
 ) -> dict[str, Any]:
+    """Run ``call`` once per target tenant.
+
+    ``client_factory`` maps a tenant key to the client handed to ``call``; it
+    defaults to the Log Analytics :class:`SentinelClient` (``ctx.client_for``).
+    Management-plane tools pass ``ctx.management_client_for``. Every call,
+    on either plane, goes through the per-tenant rate limiter.
+    """
+    make_client: ClientFactory = client_factory or ctx.client_for
+
+    async def _guarded(tenant_key: str) -> dict[str, Any]:
+        limiter = ctx.rate_limiter
+        limiter.acquire(tenant_key, tool_name)
+        client = make_client(tenant_key)
+        try:
+            payload = await call(client)
+        except RateLimitedError:
+            limiter.record_rate_limited(tenant_key)
+            raise
+        limiter.record_success(tenant_key)
+        return payload
+
     if len(targets) == 1:
-        client = ctx.client_for(targets[0])
-        return await call(client)
+        return await _guarded(targets[0])
 
     semaphore = asyncio.Semaphore(ctx.max_fan_out)
 
     async def _one(tenant_key: str) -> dict[str, Any]:
         async with semaphore:
             try:
-                client = ctx.client_for(tenant_key)
-                payload = await call(client)
+                payload = await _guarded(tenant_key)
             except SentinelError as exc:
                 audit_error(
                     "fan-out-tenant-failed",

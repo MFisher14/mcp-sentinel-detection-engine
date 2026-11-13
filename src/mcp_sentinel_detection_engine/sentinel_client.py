@@ -45,15 +45,21 @@ def _parse_retry_after(value: str | None) -> float | None:
     return min(seconds, 60.0)
 
 
-class SentinelClient(AbstractAsyncContextManager["SentinelClient"]):
-    """Thin async wrapper around the Log Analytics query API."""
+class AzureRestClient(AbstractAsyncContextManager["AzureRestClient"]):
+    """Shared retry / backoff / 401-refresh loop for Azure REST APIs.
+
+    Subclasses set ``_service_name`` (used in error messages) and ``_scope``
+    (the OAuth scope the bearer token is minted for).
+    """
+
+    _service_name = "Azure API"
+    _scope: str | None = None
 
     def __init__(
         self,
         token_manager: TokenManager,
         *,
-        workspace_id: str,
-        base_url: str | None = None,
+        base_url: str,
         timeout: float = _DEFAULT_TIMEOUT_SECONDS,
         http_client: httpx.AsyncClient | None = None,
         max_retries: int = _MAX_RETRIES,
@@ -62,8 +68,7 @@ class SentinelClient(AbstractAsyncContextManager["SentinelClient"]):
     ) -> None:
         self._token_manager = token_manager
         self._tenant_key = tenant_key
-        self._workspace_id = workspace_id
-        self._base_url = (base_url or _default_base_url()).rstrip("/")
+        self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._max_retries = max_retries
         self._sleep: Callable[[float], Awaitable[None]] = sleep or asyncio.sleep
@@ -74,8 +79,8 @@ class SentinelClient(AbstractAsyncContextManager["SentinelClient"]):
         )
 
     @property
-    def workspace_id(self) -> str:
-        return self._workspace_id
+    def tenant_key(self) -> str:
+        return self._tenant_key
 
     async def __aenter__(self) -> Self:
         return self
@@ -92,6 +97,138 @@ class SentinelClient(AbstractAsyncContextManager["SentinelClient"]):
     async def aclose(self) -> None:
         if self._owns_client:
             await self._http.aclose()
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        json: Mapping[str, Any] | None = None,
+        extra_headers: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        url = self._build_url(path)
+        attempt = 0
+        retried_after_401 = False
+
+        while True:
+            token = self._token_manager.get_token(self._tenant_key, scope=self._scope)
+            headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
+            if extra_headers is not None:
+                headers.update(extra_headers)
+            try:
+                response = await self._http.request(
+                    method,
+                    url,
+                    params=dict(params) if params else None,
+                    json=dict(json) if json else None,
+                    headers=headers,
+                )
+            except httpx.TimeoutException as exc:
+                if attempt < self._max_retries:
+                    await self._backoff(attempt, retry_after=None)
+                    attempt += 1
+                    continue
+                raise UpstreamError(f"{self._service_name} request timed out") from exc
+            except httpx.HTTPError as exc:
+                raise UpstreamError(f"{self._service_name} network error") from exc
+
+            if 200 <= response.status_code < 300:
+                return self._parse_json(response)
+
+            if response.status_code == 401 and not retried_after_401:
+                retried_after_401 = True
+                self._token_manager.invalidate(self._tenant_key, scope=self._scope)
+                continue
+
+            if response.status_code == 401:
+                raise AuthError(f"{self._service_name} rejected the access token")
+
+            if response.status_code == 404:
+                raise NotFoundError(
+                    f"{self._service_name} returned 404 Not Found",
+                    status_code=response.status_code,
+                )
+
+            if response.status_code in _RETRYABLE_STATUSES and attempt < self._max_retries:
+                retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+                await self._backoff(attempt, retry_after=retry_after)
+                attempt += 1
+                continue
+
+            if response.status_code == 429:
+                raise RateLimitedError(
+                    f"{self._service_name} rate limit exceeded; retries exhausted",
+                    status_code=response.status_code,
+                )
+
+            raise UpstreamError(
+                f"{self._service_name} returned HTTP {response.status_code}",
+                status_code=response.status_code,
+            )
+
+    def _build_url(self, path: str) -> str:
+        if path.startswith("http://") or path.startswith("https://"):
+            # Absolute URLs (e.g. ARM ``nextLink`` pagination cursors) come from
+            # upstream responses. Only follow them back to the configured API
+            # origin so a tampered cursor can never redirect our bearer token
+            # to a third-party host.
+            if not path.startswith(self._base_url + "/"):
+                raise UpstreamError(f"{self._service_name} returned a link to an unexpected host")
+            return path
+        if not path.startswith("/"):
+            path = "/" + path
+        return f"{self._base_url}{path}"
+
+    def _parse_json(self, response: httpx.Response) -> dict[str, Any]:
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise UpstreamError(f"{self._service_name} returned non-JSON response") from exc
+        if not isinstance(payload, dict):
+            raise UpstreamError(f"{self._service_name} returned unexpected JSON shape")
+        return payload
+
+    async def _backoff(self, attempt: int, *, retry_after: float | None) -> None:
+        if retry_after is not None:
+            delay = retry_after
+        else:
+            cap_ms = min(2**attempt, 8) * 1000
+            delay = secrets.randbelow(cap_ms + 1) / 1000.0
+        await self._sleep(delay)
+
+
+class SentinelClient(AzureRestClient):
+    """Thin async wrapper around the Log Analytics query API."""
+
+    _service_name = "Log Analytics"
+
+    def __init__(
+        self,
+        token_manager: TokenManager,
+        *,
+        workspace_id: str,
+        base_url: str | None = None,
+        timeout: float = _DEFAULT_TIMEOUT_SECONDS,
+        http_client: httpx.AsyncClient | None = None,
+        max_retries: int = _MAX_RETRIES,
+        tenant_key: str = "default",
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> None:
+        super().__init__(
+            token_manager,
+            base_url=base_url or _default_base_url(),
+            timeout=timeout,
+            http_client=http_client,
+            max_retries=max_retries,
+            tenant_key=tenant_key,
+            sleep=sleep,
+        )
+        self._workspace_id = workspace_id
+
+    @property
+    def workspace_id(self) -> str:
+        return self._workspace_id
 
     async def query(
         self,
@@ -111,96 +248,7 @@ class SentinelClient(AbstractAsyncContextManager["SentinelClient"]):
         headers = {"Prefer": f"wait={server_timeout_seconds}"}
         return await self._request("POST", path, json=body, extra_headers=headers)
 
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: Mapping[str, Any] | None = None,
-        json: Mapping[str, Any] | None = None,
-        extra_headers: Mapping[str, str] | None = None,
-    ) -> dict[str, Any]:
-        url = self._build_url(path)
-        attempt = 0
-        retried_after_401 = False
-
-        while True:
-            token = self._token_manager.get_token(self._tenant_key)
-            headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
-            if extra_headers is not None:
-                headers.update(extra_headers)
-            try:
-                response = await self._http.request(
-                    method,
-                    url,
-                    params=dict(params) if params else None,
-                    json=dict(json) if json else None,
-                    headers=headers,
-                )
-            except httpx.TimeoutException as exc:
-                if attempt < self._max_retries:
-                    await self._backoff(attempt, retry_after=None)
-                    attempt += 1
-                    continue
-                raise UpstreamError("Log Analytics request timed out") from exc
-            except httpx.HTTPError as exc:
-                raise UpstreamError("Log Analytics network error") from exc
-
-            if 200 <= response.status_code < 300:
-                return self._parse_json(response)
-
-            if response.status_code == 401 and not retried_after_401:
-                retried_after_401 = True
-                self._token_manager.invalidate(self._tenant_key)
-                continue
-
-            if response.status_code == 401:
-                raise AuthError("Log Analytics rejected the access token")
-
-            if response.status_code == 404:
-                raise NotFoundError(
-                    "Log Analytics returned 404 Not Found",
-                    status_code=response.status_code,
-                )
-
-            if response.status_code in _RETRYABLE_STATUSES and attempt < self._max_retries:
-                retry_after = _parse_retry_after(response.headers.get("Retry-After"))
-                await self._backoff(attempt, retry_after=retry_after)
-                attempt += 1
-                continue
-
-            if response.status_code == 429:
-                raise RateLimitedError(
-                    "Log Analytics rate limit exceeded; retries exhausted",
-                    status_code=response.status_code,
-                )
-
-            raise UpstreamError(
-                f"Log Analytics returned HTTP {response.status_code}",
-                status_code=response.status_code,
-            )
-
-    def _build_url(self, path: str) -> str:
-        if path.startswith("http://") or path.startswith("https://"):
-            return path
-        if not path.startswith("/"):
-            path = "/" + path
-        return f"{self._base_url}{path}"
-
-    @staticmethod
-    def _parse_json(response: httpx.Response) -> dict[str, Any]:
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise UpstreamError("Log Analytics returned non-JSON response") from exc
-        if not isinstance(payload, dict):
-            raise UpstreamError("Log Analytics returned unexpected JSON shape")
-        return payload
-
-    async def _backoff(self, attempt: int, *, retry_after: float | None) -> None:
-        if retry_after is not None:
-            delay = retry_after
-        else:
-            cap_ms = min(2**attempt, 8) * 1000
-            delay = secrets.randbelow(cap_ms + 1) / 1000.0
-        await self._sleep(delay)
+    async def metadata(self) -> dict[str, Any]:
+        """Fetch the workspace schema (tables + columns) from the metadata API."""
+        path = f"/v1/workspaces/{self._workspace_id}/metadata"
+        return await self._request("GET", path)

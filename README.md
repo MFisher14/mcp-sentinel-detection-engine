@@ -6,15 +6,28 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![GitHub Issues](https://img.shields.io/github/issues/MFisher14/mcp-sentinel-detection-engine.svg)](https://github.com/MFisher14/mcp-sentinel-detection-engine/issues)
 
-> **Status: Alpha — v0.1.0 (May 2026).** Tool surface and config schema
+> **Status: Alpha — v0.2.0 (September 2026).** Tool surface and config schema
 > may change before v1.0. See
 > [GitHub Milestones](https://github.com/MFisher14/mcp-sentinel-detection-engine/milestones)
-> for the v0.2 / v0.3 / v0.4 plan.
+> for the v0.3 / v0.4 plan.
+
+## Demo
+
+![Claude Code driving convert_sigma_to_kql, validate_kql_against_schema, dry_run_kql, and generate_sentinel_terraform against a bundled Sigma rule](docs/demo/sentinel-pipeline.gif)
+
+*One prompt in Claude Code drives all four tools against the bundled
+`examples/sigma/failed_logon_burst.yml`: Sigma → KQL → schema
+validation → dry-run → Terraform. The dry-run hits a mocked Log
+Analytics workspace with placeholder IDs; no real credentials are
+involved. See [`docs/demo/`](docs/demo/README.md) for the
+[asciicast](docs/demo/sentinel-pipeline.cast) and how it was recorded.*
 
 ## Table of contents
 
+- [Demo](#demo)
 - [Why an MCP server, not just a CLI?](#why-an-mcp-server-not-just-a-cli)
 - [Quickstart (offline)](#quickstart-offline)
+  - [What it looks like in Claude](#what-it-looks-like-in-claude)
 - [Tools](#tools)
 - [Prerequisites (Azure — required only for live query execution)](#prerequisites-azure--required-only-for-live-query-execution)
 - [Installation](#installation)
@@ -38,7 +51,7 @@ authenticates as one or more Azure App Registrations via OAuth 2.0
 **certificate** client credentials, supports a single tenant or many,
 and treats every input and every upstream response as untrusted.
 
-> **v0.1 status:** Sigma → KQL via pySigma's `pysigma-backend-kusto`
+> **v0.2 status:** Sigma → KQL via pySigma's `pysigma-backend-kusto`
 > with the `azure_monitor` pipeline, static column validation against a
 > bundled Log Analytics schema snapshot, live KQL dry-run against a
 > Sentinel workspace with certificate-based auth, and Terraform emission
@@ -59,8 +72,8 @@ engineer actually does — is the loop around it:
    follow-up questions; a CLI can't.
 2. **Catch the column typo before Sentinel does.** `validate_kql_against_schema` 
    checks the generated KQL against a bundled Log Analytics schema snapshot 
-   and proposes corrections (`AccontName` → `AccountName`, `Account`). That's 
-   a conversation, not a flag.
+   and proposes corrections (`AccontName` → `AccountName`, `Account`, 
+   `AccountType`). That's a conversation, not a flag.
 3. **Smoke-test on live data, read-only.** `dry_run_kql` runs the converted 
    query against an actual workspace with a 10-row cap and a 60-second 
    timeout. The agent sees the rows and decides whether the rule is right.
@@ -94,21 +107,51 @@ Point Claude Desktop at the server using the no-credentials snippet in
 any of the bundled demo prompts — the five rows in that file cover all
 four tools end-to-end against the seven example rules in `examples/sigma/`.
 
+### What it looks like in Claude
+
+Claude reads the rule, converts it, and checks the KQL's columns. The
+provenance header and Sigma id travel with the query:
+
+![convert_sigma_to_kql and validate_kql_against_schema in Claude Code](docs/demo/convert-and-validate.png)
+
+Claude then emits the Terraform rule with ATT&CK tactics and techniques:
+
+![generate_sentinel_terraform in Claude Code](docs/demo/generate-terraform.png)
+
+Claude's summary covers all four steps, including the dry-run rows, and
+flags a gap between the rule's description and its query:
+
+![Claude's summary after all four tool calls](docs/demo/summary.png)
+
 ---
 
 ## Tools
 
-All four tools accept an optional `tenant` parameter, but only
-`dry_run_kql` actually uses it — the other three are pure functions and
+| Tool                              | Needs Azure?                       | Purpose                                                       |
+| --------------------------------- | ---------------------------------- | ------------------------------------------------------------- |
+| `convert_sigma_to_kql`            | no                                 | Sigma → Sentinel KQL                                          |
+| `validate_kql_against_schema`     | no (live schema: Log Analytics)    | Column check against the snapshot or the live workspace schema |
+| `dry_run_kql`                     | Log Analytics (read)               | 10-row smoke test against a live workspace                    |
+| `generate_sentinel_terraform`     | no                                 | Emit `azurerm_sentinel_alert_rule_scheduled` HCL              |
+| `list_deployed_sentinel_rules`    | ARM management plane (read)        | Inventory of deployed analytics rules                         |
+| `detect_rule_drift`               | ARM management plane (read)        | Diff checked-in HCL against the live rule                     |
+| `terraform_plan`                  | separate plan identity (`ARM_*`)   | `terraform plan` (never `apply`) on emitted HCL               |
+| `link_hunt_to_rule`               | no                                 | Defender XDR hunt → Sentinel KQL + Sigma skeleton             |
+
+Every tool accepts an optional `tenant` parameter. `dry_run_kql` and the
+management-plane tools always use it; `validate_kql_against_schema` uses
+it to opt into the live workspace schema; the pure tools ignore it and
 need no Azure auth. The semantics are the same as the Defender XDR
 companion:
 
-- **omitted** → the configured `default` tenant.
+- **omitted** → the configured `default` tenant (for
+  `validate_kql_against_schema`: the bundled offline snapshot).
 - **`"contoso"`** (or any configured key) → that specific tenant.
-- **`"*"`** → fan out across every configured tenant (only meaningful
-  for `dry_run_kql`). Bounded concurrency (5 by default). Returns
+- **`"*"`** → fan out across every configured tenant (`dry_run_kql`,
+  live `validate_kql_against_schema`, `list_deployed_sentinel_rules`,
+  `detect_rule_drift`). Bounded concurrency (5 by default). Returns
   labelled per-tenant results; one failing tenant does not poison the
-  rest.
+  rest. `terraform_plan` rejects fan-out.
 
 ### `convert_sigma_to_kql`
 
@@ -133,14 +176,23 @@ mappings (`signinlogs`, `auditlogs`, `officeactivity`, `azureactivity`,
 {
   "queries": [
     {
-      "kql": "SecurityEvent\n| where EventID == 4625 and LogonType == 3",
+      "kql": "// Generated by mcp-sentinel-detection-engine v0.1.0 — see THREAT_MODEL.md\n// sigma-id: 36e037c4-...\nSecurityEvent\n| where EventID == 4625 and LogonType == 3",
       "target_table": "SecurityEvent",
+      "sigma_id": "36e037c4-...",
       "warnings": []
     }
   ],
   "metadata": {"query_count": 1, "target_tables": ["SecurityEvent"]}
 }
 ```
+
+Every emitted query starts with a `//` provenance header: the installed
+server version (from `importlib.metadata`), a threat-model reference, and
+the Sigma rule's `id` so a reviewer can grep the audit log for it. The
+reference defaults to `THREAT_MODEL.md`; point it at a tag-pinned URL with
+`MCP_SENTINEL_THREAT_MODEL_REF`. The header is a KQL comment, so it survives
+`validate_kql_against_schema`, `dry_run_kql`, and lands verbatim in the
+HCL heredoc emitted by `generate_sentinel_terraform`.
 
 Pure function. No Azure auth required.
 
@@ -161,15 +213,40 @@ Pure function. No Azure auth required.
 {
   "valid": false,
   "table": "SecurityEvent",
-  "unknown_columns": ["AccontName"],
-  "suggestions": {"AccontName": ["AccountName", "Account"]},
-  "metadata": {"schema_column_count": 41, "referenced_column_count": 1}
+  "unknown_columns": ["AccontName", "admin"],
+  "suggestions": {"AccontName": ["AccountName", "Account", "AccountType"]},
+  "metadata": {
+    "schema_column_count": 42,
+    "referenced_column_count": 2,
+    "schema_source": "bundled",
+    "snapshot_date": "2026-05-12"
+  }
 }
 ```
 
-Offline check against the bundled Log Analytics schema snapshot. No
-Azure auth required. v0.2 will offer live schema fetching via the Log
-Analytics metadata API.
+**Schema source.** With `tenant` omitted, the query is checked against
+the bundled snapshot of 13 common tables (`SecurityEvent`, `SigninLogs`,
+`AuditLogs`, ...) — offline, no Azure auth, and the response carries
+`metadata.schema_source: "bundled"` plus the `snapshot_date`. Pass
+`tenant` (or `"*"`) to validate against the **live** schema of that
+tenant's workspace instead, fetched from the Log Analytics metadata API
+(`GET /v1/workspaces/{id}/metadata`). That catches custom `*_CL` tables
+and columns added since the snapshot. Each workspace's schema is fetched
+once and cached for the server's lifetime; `metadata.schema_cache_hit`
+tells you whether this call reused it. Restart the server to refresh.
+
+Column extraction is a deliberate over-approximation: it collects every
+bare identifier that isn't a KQL keyword or a known table name, and it
+does **not** strip string literals (it does skip `//` comments, such as
+the provenance header `convert_sigma_to_kql` adds). That is why `admin` — the *value*
+being compared against, not a column — shows up in `unknown_columns`
+above. The trade-off is intentional: a false positive costs the agent one
+follow-up question, whereas missing a real typo costs a failed rule in
+Sentinel. Read `unknown_columns` as "identifiers worth a second look",
+and treat `suggestions` as the actionable part — a genuine column typo is
+the case that gets a close match. A query whose predicates compare
+against string literals will therefore rarely report `valid: true`; use
+literal-free predicates if you want that signal to be crisp.
 
 ### `dry_run_kql`
 
@@ -264,6 +341,157 @@ any workspace, and the resource GUID is derived server-side from a
 stable namespace UUID — caller-supplied strings are never interpolated
 unquoted. Pure function. No Azure auth required.
 
+### `list_deployed_sentinel_rules`
+
+**Input**
+
+```json
+{"enabled": true, "severity": "High", "kind": "Scheduled", "limit": 50, "tenant": "contoso"}
+```
+
+**Output**
+
+```json
+{
+  "rules": [
+    {
+      "id": "/subscriptions/.../providers/Microsoft.SecurityInsights/alertRules/6f1c0e8a-...",
+      "name": "6f1c0e8a-...",
+      "display_name": "Failed Logon Burst",
+      "severity": "High",
+      "enabled": true,
+      "kind": "Scheduled",
+      "last_modified": "2026-05-12T09:14:22Z"
+    }
+  ],
+  "metadata": {"returned_count": 1, "scanned_count": 37, "truncated": false, "workspace_resource_id": "..."}
+}
+```
+
+All filters are optional; `limit` defaults to 100 (max 500). Reads
+`Microsoft.SecurityInsights/alertRules` on the Azure Resource Manager
+API and follows `nextLink` pagination (same-origin only, max 20
+pages). Requires the tenant's
+[management-plane config](#management-plane-v03-tools).
+
+### `detect_rule_drift`
+
+**Input**
+
+```json
+{
+  "hcl": "resource \"azurerm_sentinel_alert_rule_scheduled\" \"failed_logon_burst\" { ... }",
+  "tenant": "contoso"
+}
+```
+
+Pass `hcl` inline or `hcl_path` (absolute). The live rule is chosen by
+`rule_id` (GUID) or `rule_name_pattern` (case-insensitive glob over
+display name / GUID, must match exactly one rule). If you omit both, the
+tool uses the GUID in the HCL's `name` attribute, which
+`generate_sentinel_terraform` always sets. Use `resource_name` to pick
+one block from a multi-rule file.
+
+**Output**
+
+```json
+{
+  "drifted": true,
+  "rule_id": "6f1c0e8a-...",
+  "display_name": "Failed Logon Burst",
+  "resource_name": "failed_logon_burst",
+  "high_priority": ["enabled", "query"],
+  "changed": [
+    {"field": "enabled", "high_priority": true, "before": true, "after": false},
+    {"field": "query", "high_priority": true, "before": "SecurityEvent\n| where ...", "after": "SecurityEvent | take 1"}
+  ],
+  "added": [],
+  "removed": [],
+  "warnings": []
+}
+```
+
+`before` is the checked-in HCL value and `after` is the live value.
+Durations are compared by length (`PT1H` == `PT60M`), tactics and
+techniques ignore order, and the query comparison ignores line-ending
+and trailing-whitespace differences. `tenant: "*"` checks the same rule
+GUID in every tenant, which works because emitted GUIDs are stable per
+rule name.
+
+### `terraform_plan`
+
+**Input**
+
+```json
+{"hcl": "resource \"azurerm_sentinel_alert_rule_scheduled\" \"failed_logon_burst\" { ... }"}
+```
+
+**Output** (truncated)
+
+```json
+{
+  "success": true,
+  "stage": "complete",
+  "summary": {"add": 0, "change": 1, "destroy": 0},
+  "resource_changes": [
+    {"address": "azurerm_sentinel_alert_rule_scheduled.failed_logon_burst", "type": "azurerm_sentinel_alert_rule_scheduled", "name": "failed_logon_burst", "actions": ["update"]}
+  ],
+  "plan_output": "Terraform will perform the following actions: ...",
+  "errors": "",
+  "warnings": [],
+  "rule_count": 1,
+  "metadata": {"hcl_sha256": "...", "workspace_resource_id": "/subscriptions/.../workspaces/..."}
+}
+```
+
+Runs `terraform init`, `plan -lock=false` and `show -json` in a
+throwaway directory. **It never runs `apply`.** Applying stays a human
+step outside Claude, with separate credentials. The HCL must contain
+only `azurerm_sentinel_alert_rule_scheduled` blocks with literal
+values; provisioners, data sources, modules and `${...}` interpolation
+are rejected before Terraform starts. `log_analytics_workspace_id` (ARM
+resource ID) defaults to the tenant's management-plane config. A failed
+stage returns `success: false` with `stage` set to `init`, `plan` or
+`show`. See [Terraform plan](#terraform-plan-terraform_plan) for setup.
+
+### `link_hunt_to_rule`
+
+**Input**
+
+```json
+{
+  "query": "AADSignInEventsBeta\n| where Timestamp > ago(7d)\n| where ErrorCode == 50126 and AccountUpn endswith \"@contoso.com\"",
+  "title": "Password spray against contoso.com"
+}
+```
+
+**Output** (truncated)
+
+```json
+{
+  "sentinel_query": "SigninLogs\n| where TimeGenerated > ago(7d)\n| where ResultType == 50126 and UserPrincipalName endswith \"@contoso.com\"",
+  "source_tables": ["AADSignInEventsBeta"],
+  "target_tables": ["SigninLogs"],
+  "table_mappings": [{"source": "AADSignInEventsBeta", "target": "SigninLogs", "note": "..."}],
+  "column_mappings": [
+    {"source": "AccountUpn", "target": "UserPrincipalName"},
+    {"source": "ErrorCode", "target": "ResultType"},
+    {"source": "Timestamp", "target": "TimeGenerated"}
+  ],
+  "sigma_skeleton": "title: \"Password spray against contoso.com\"\nid: ...\nstatus: experimental\n...",
+  "warnings": []
+}
+```
+
+Pure function, no Azure auth. Table and column mapping is best effort
+and never rewrites string literals. `Device*` / `Email*` / `Identity*`
+tables keep their names, with a note that they only exist in Sentinel
+when the Defender XDR connector streams raw events. The Sigma skeleton
+is seeded from simple `==` / `=~` / `has` / `contains` / `startswith` /
+`endswith` / `in (...)` predicates, and it parses and converts with
+`convert_sigma_to_kql`. Review it before shipping. See
+[Closed-loop detection tuning](#closed-loop-detection-tuning-with-mcp-defender-xdr).
+
 ---
 
 ## Prerequisites (Azure — required only for live query execution)
@@ -318,26 +546,59 @@ against a real Sentinel workspace.
 
 ## Installation
 
-### With `uvx`
+> **This package is not published to PyPI.** Install from source. The
+> [PyPI installation (not yet available)](#pypi-installation-not-yet-available)
+> section below records the commands that will work once it is.
 
-```bash
-uvx --from mcp-sentinel-detection-engine mcp-sentinel-detection-engine
-```
+### From source
 
-### With `pip`
-
-```bash
-pip install mcp-sentinel-detection-engine
-mcp-sentinel-detection-engine
-```
-
-### From source (development)
+Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/MFisher14/mcp-sentinel-detection-engine.git
 cd mcp-sentinel-detection-engine
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
+```
+
+Verify the install — the server should start, advertise its eight tools
+over stdio, and wait:
+
+```bash
+mcp-sentinel-detection-engine
+```
+
+It exits with code 2 and a message on stderr if Azure configuration is
+present but malformed. With **no** Azure environment variables set it
+starts normally: `convert_sigma_to_kql`, `validate_kql_against_schema`,
+and `generate_sentinel_terraform` are pure functions and need no
+credentials. Press Ctrl-C to stop it, then wire it into your MCP client
+via [Claude Desktop / Claude Code](#claude-desktop--claude-code) below.
+
+Two equivalent invocations are available for the client config, and both
+require the editable install above:
+
+| Invocation                                                  | Notes                                                      |
+| ----------------------------------------------------------- | ---------------------------------------------------------- |
+| `<repo>/.venv/bin/mcp-sentinel-detection-engine`            | Console script. Absolute path; no `cwd` needed.            |
+| `<repo>/.venv/bin/python -m mcp_sentinel_detection_engine.server` | Module form. Useful if the console script isn't on `PATH`. |
+
+Without a virtualenv, `pip install -e ".[dev]"` inside the clone works
+the same way; substitute your interpreter's path for `.venv/bin/`.
+
+### PyPI installation (not yet available)
+
+**These commands do not work yet** — the package has not been published.
+They are recorded here so the client config and docs can switch over in
+one step once it is. Track publication in
+[GitHub Milestones](https://github.com/MFisher14/mcp-sentinel-detection-engine/milestones).
+
+```bash
+# Neither of these resolves today.
+uvx --from mcp-sentinel-detection-engine mcp-sentinel-detection-engine
+
+pip install mcp-sentinel-detection-engine
+mcp-sentinel-detection-engine
 ```
 
 ---
@@ -358,6 +619,7 @@ Set these environment variables (or a `.env` file based on
 | `AZURE_CERT_PASSPHRASE`           | no       | Passphrase for the PFX. Omit if unencrypted.               |
 | `LOGANALYTICS_API_BASE`           | no       | Override the Log Analytics query API base URL.             |
 | `MCP_SENTINEL_LOG_LEVEL`          | no       | Audit log level. Default `INFO`.                           |
+| `MCP_SENTINEL_THREAT_MODEL_REF`   | no       | Threat-model reference in the KQL provenance header.       |
 
 The server validates that the PFX file exists and that
 `SENTINEL_WORKSPACE_ID` is a GUID at startup, and fails fast with exit
@@ -398,6 +660,35 @@ server refuses to load any looser permissions.
 }
 ```
 
+#### Per-tenant rate limits
+
+Every call that reaches Log Analytics (`dry_run_kql`, live
+`validate_kql_against_schema`) goes through a per-`(tenant, tool)` token
+bucket and a per-tenant circuit breaker. The defaults suit most
+workspaces; override them per tenant in the tenants file:
+
+```json
+"contoso": {
+  "...": "...",
+  "rate_limit": {
+    "requests_per_minute": 30,
+    "burst": 5,
+    "circuit_breaker_threshold": 3,
+    "circuit_breaker_cooloff_seconds": 300
+  }
+}
+```
+
+| Key                               | Default | Meaning                                                              |
+| --------------------------------- | ------- | -------------------------------------------------------------------- |
+| `requests_per_minute`             | 60      | Steady-state refill rate per `(tenant, tool)`.                       |
+| `burst`                           | 10      | Bucket capacity.                                                     |
+| `circuit_breaker_threshold`       | 5       | Consecutive calls ending in upstream 429 before the tenant cools off. |
+| `circuit_breaker_cooloff_seconds` | 300     | Cool-off window; calls fail fast with `rate_limited` during it.      |
+
+A tenant that runs out of quota in the middle of a `tenant: "*"` fan-out
+gets a `rate_limited` entry; the other tenants still return results.
+
 Two passphrase patterns are supported per tenant; pick **one**:
 
 - **`cert_passphrase_env`** *(recommended)* — names an environment
@@ -406,12 +697,247 @@ Two passphrase patterns are supported per tenant; pick **one**:
 - **`cert_passphrase`** — inline literal. Convenient with `sops`/`age`
   but emits a warning to the audit log. Don't commit it.
 
+### Transport: stdio (default) or HTTP
+
+stdio is the default and needs no extra configuration. For remote
+clients (a shared internal MCP gateway, a CI runner, Claude on a
+different host than the credentials), start the server with the
+**Streamable HTTP** transport. Responses stream over SSE, and the
+endpoint is `/mcp`:
+
+```bash
+# 1. A shared HS256 secret (>= 32 bytes, chmod 0600).
+python -c "import secrets; print(secrets.token_urlsafe(48))" > ~/.config/mcp-sentinel/http-secret
+chmod 600 ~/.config/mcp-sentinel/http-secret
+
+# 2. Start the server. Auth is mandatory; there is no unauthenticated HTTP mode.
+export MCP_SENTINEL_HTTP_AUTH_SECRET_FILE=~/.config/mcp-sentinel/http-secret
+export MCP_SENTINEL_HTTP_AUTH_ISSUER=https://mcp-gateway.internal
+export MCP_SENTINEL_HTTP_AUTH_AUDIENCE=mcp-sentinel-detection-engine/prod-1
+mcp-sentinel-detection-engine --transport http --host 127.0.0.1 --port 8765
+
+# 3. Mint a short-lived token (reference minter; production tokens come from your IdP/gateway).
+python examples/mint_http_token.py --secret-file ~/.config/mcp-sentinel/http-secret \
+  --issuer https://mcp-gateway.internal --audience mcp-sentinel-detection-engine/prod-1
+
+# 4. Connect, e.g. from Claude Code:
+claude mcp add --transport http sentinel http://127.0.0.1:8765/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+| Variable / flag                              | Default     | Description                                                                 |
+| -------------------------------------------- | ----------- | --------------------------------------------------------------------------- |
+| `--transport` / `MCP_SENTINEL_TRANSPORT`     | `stdio`     | `stdio` or `http`.                                                          |
+| `--host` / `MCP_SENTINEL_HTTP_HOST`          | `127.0.0.1` | Bind address. Non-loopback without TLS logs a warning.                      |
+| `--port` / `MCP_SENTINEL_HTTP_PORT`          | `8765`      | Bind port.                                                                  |
+| `MCP_SENTINEL_HTTP_AUTH_SECRET_FILE`         | —           | HS256 shared secret file (0600, >= 32 bytes). One of this or the next.     |
+| `MCP_SENTINEL_HTTP_AUTH_PUBLIC_KEY_FILE`     | —           | PEM public key for RS256/ES256 tokens minted by an external IdP.           |
+| `MCP_SENTINEL_HTTP_AUTH_ISSUER`              | —           | Required `iss` claim.                                                       |
+| `MCP_SENTINEL_HTTP_AUTH_AUDIENCE`            | —           | Required `aud` claim. Make it unique per server instance.                  |
+| `MCP_SENTINEL_HTTP_AUTH_MAX_TTL_SECONDS`     | `900`       | Longest token lifetime (`exp - iat`) accepted.                              |
+| `MCP_SENTINEL_HTTP_AUTH_SINGLE_USE`          | off         | Reject any reused `jti`. Only for clients that mint a token per request.   |
+| `MCP_SENTINEL_HTTP_TLS_CERT` / `_TLS_KEY`    | —           | Serve TLS directly. Otherwise, terminate TLS in front.                      |
+| `MCP_SENTINEL_HTTP_ALLOWED_HOSTS`            | bind host   | Comma-separated `Host` header allow-list (DNS-rebinding protection).        |
+
+Tokens must carry `iss`, `aud`, `iat`, `exp`, and `jti`. A request that is
+missing a token, or whose token is expired, too long-lived, issued in the
+future, signed with the wrong key, or for the wrong issuer/audience, gets
+`401`. The audit log records the reason code and never the token. Every
+audit line carries a `transport` field (`stdio` / `http`). See
+[`THREAT_MODEL.md`](THREAT_MODEL.md) A4 / T8.
+
+### Management plane (v0.3 tools)
+
+`list_deployed_sentinel_rules` and `detect_rule_drift` read rules from
+Azure Resource Manager, which addresses the workspace by subscription,
+resource group and name rather than by workspace GUID. Set all three
+per tenant (all or none):
+
+| Variable / tenants-file key                        | Description                                   |
+| -------------------------------------------------- | --------------------------------------------- |
+| `SENTINEL_SUBSCRIPTION_ID` / `subscription_id`     | Subscription GUID that holds the workspace.   |
+| `SENTINEL_RESOURCE_GROUP` / `resource_group`       | Resource group of the workspace.              |
+| `SENTINEL_WORKSPACE_NAME` / `workspace_name`       | Log Analytics workspace **name** (not GUID).  |
+| `AZURE_MANAGEMENT_API_BASE` *(optional, env only)* | Override the ARM base URL (sovereign clouds). |
+
+The same App Registration requests a second token for
+`https://management.azure.com/.default`. `Microsoft Sentinel Reader` at
+the workspace scope already covers reading alert rules. **Don't grant a
+write role.** The server only sends `GET`, but RBAC is what actually
+enforces read-only (see [`THREAT_MODEL.md`](THREAT_MODEL.md) T9).
+
+### Terraform plan (`terraform_plan`)
+
+`terraform_plan` needs the `terraform` binary on `PATH` and runs under
+a **different identity** from the one the server queries with:
+
+| Variable                         | Description |
+| -------------------------------- | ----------- |
+| `ARM_*`                          | Standard `azurerm` provider auth for the plan identity (`ARM_CLIENT_ID`, `ARM_TENANT_ID`, `ARM_SUBSCRIPTION_ID`, plus `ARM_CLIENT_CERTIFICATE_PATH` / `ARM_USE_OIDC` / ...). It must not reuse a server App Registration; the tool refuses to run if `ARM_CLIENT_ID` matches one. |
+| `MCP_SENTINEL_TF_BACKEND_CONFIG` | Absolute path to a `backend.tf` holding only a `terraform { backend "azurerm" { ... } }` block, pointing at state the plan identity owns. If unset, the plan runs against an empty local state and every rule shows as a create. |
+| `TF_PLUGIN_CACHE_DIR`            | Optional provider cache so `init` doesn't hit the registry on every call. |
+
+Only `PATH`, `ARM_*`, proxy/TLS variables and `TF_PLUGIN_CACHE_DIR` are
+passed to the Terraform process. The server's own `AZURE_*` variables
+and passphrases are not (see [`THREAT_MODEL.md`](THREAT_MODEL.md) T10).
+
+### Certificates from a secret store
+
+Each tenant needs exactly **one** certificate source: `cert_path` (a
+PFX on disk, as above), `key_vault`, or `vault`. With a secret store
+the PFX never touches the host filesystem: it is fetched on first use,
+held in memory only, cached for an hour, and picked up again
+automatically when it's rotated. A tenant with a secret-store block must
+not set `cert_passphrase` / `cert_passphrase_env`; the passphrase (if
+any) comes from inside the block. Failures surface as `auth_failure`
+without the vault URL, secret path, or token source. See
+[`THREAT_MODEL.md` T11](./THREAT_MODEL.md) for the bootstrap-identity
+boundary.
+
+#### Azure Key Vault
+
+```json
+"contoso": {
+  "tenant_id": "11111111-1111-1111-1111-111111111111",
+  "client_id": "22222222-2222-2222-2222-222222222222",
+  "workspace_id": "55555555-5555-5555-5555-555555555555",
+  "key_vault": {
+    "url": "https://contoso-sentinel-kv.vault.azure.net",
+    "certificate_name": "mcp-sentinel-contoso",
+    "bootstrap_identity": { "type": "managed_identity" }
+  }
+}
+```
+
+| Field                | Required | Description                                                                                       |
+| -------------------- | -------- | ------------------------------------------------------------------------------------------------- |
+| `url`                | yes      | `https://<name>.vault.azure.net` (also `.vault.azure.cn`, `.vault.usgovcloudapi.net`). No path.    |
+| `certificate_name`   | yes      | Key Vault certificate name. Its secret view (`application/x-pkcs12`) is fetched.                  |
+| `bootstrap_identity` | no       | Identity used to *read* the vault. Defaults to `{"type": "managed_identity"}`.                    |
+| `passphrase_env`     | no       | Env var holding the PFX passphrase. Only needed if you imported a passphrase-protected PFX as a plain secret. |
+
+`bootstrap_identity` is one of:
+
+- `{"type": "managed_identity", "client_id": "<optional user-assigned GUID>"}`.
+  Uses `IDENTITY_ENDPOINT`/`IDENTITY_HEADER` (App Service, Container
+  Apps, Functions) when present, otherwise the Instance Metadata Service
+  (VMs, AKS).
+- `{"type": "app_registration", "tenant_id": "...", "client_id": "...", "cert_path": "/secrets/bootstrap.pfx", "cert_passphrase_env": "..."}`.
+  A *separate* App Registration, granted only `Key Vault Secrets User`
+  on that vault.
+
+Grant the bootstrap identity `Key Vault Secrets User` (RBAC) or `get`
+on secrets (access policy) on the vault, and nothing on the Log
+Analytics workspace.
+
+#### HashiCorp Vault (KV v2)
+
+```json
+"fabrikam": {
+  "tenant_id": "33333333-3333-3333-3333-333333333333",
+  "client_id": "44444444-4444-4444-4444-444444444444",
+  "workspace_id": "66666666-6666-6666-6666-666666666666",
+  "vault": {
+    "address": "https://vault.internal.example:8200",
+    "mount": "secret",
+    "path": "mcp-sentinel/fabrikam",
+    "auth": { "method": "approle", "role_id_env": "VAULT_ROLE_ID", "secret_id_env": "VAULT_SECRET_ID" }
+  }
+}
+```
+
+The secret at `<mount>/data/<path>` must have a `pfx_base64` key (the
+base64-encoded PFX) and may have a `passphrase` key:
+
+```bash
+vault kv put secret/mcp-sentinel/fabrikam pfx_base64="$(base64 < app-cert.pfx)"
+```
+
+| Field       | Required | Description                                                                 |
+| ----------- | -------- | --------------------------------------------------------------------------- |
+| `address`   | yes      | Vault base URL. Must be `https` (plain `http` only for `localhost`).        |
+| `mount`     | yes      | KV-v2 mount (e.g. `secret`).                                                |
+| `path`      | yes      | Secret path under the mount.                                                |
+| `namespace` | no       | Vault Enterprise / HCP namespace (`X-Vault-Namespace`).                     |
+| `auth`      | yes      | Token source. See below.                                                    |
+
+`auth` is one of:
+
+- `{"method": "token", "token_env": "VAULT_TOKEN", "wrapped": false}`.
+  Token read from an env var. With `"wrapped": true` the env var holds a
+  response-wrapped token, which is unwrapped once at first use.
+- `{"method": "approle", "role_id_env": "...", "secret_id_env": "...", "mount": "approle"}`.
+- `{"method": "kubernetes", "role": "mcp-sentinel", "jwt_path": "/var/run/secrets/kubernetes.io/serviceaccount/token", "mount": "kubernetes"}`.
+
+Tokens are renewed with `auth/token/renew-self` when their remaining
+TTL drops below 60 s. Non-renewable AppRole / Kubernetes tokens are
+replaced by logging in again.
+
 ### Claude Desktop / Claude Code
 
 Add to your MCP client's config (Claude Desktop:
 `claude_desktop_config.json`; Claude Code: `~/.claude.json`).
 
+Replace `/absolute/path/to/mcp-sentinel-detection-engine` with the path
+to your clone. The path must be absolute — MCP clients do not expand `~`
+and do not inherit your shell's working directory.
+
 #### Single tenant
+
+```json
+{
+  "mcpServers": {
+    "sentinel-detection-engine": {
+      "command": "/absolute/path/to/mcp-sentinel-detection-engine/.venv/bin/mcp-sentinel-detection-engine",
+      "env": {
+        "AZURE_TENANT_ID": "00000000-0000-0000-0000-000000000000",
+        "AZURE_CLIENT_ID": "00000000-0000-0000-0000-000000000000",
+        "AZURE_CERT_PATH": "/Users/me/.config/mcp-sentinel-detection-engine/app-cert.pfx",
+        "SENTINEL_WORKSPACE_ID": "00000000-0000-0000-0000-000000000000"
+      }
+    }
+  }
+}
+```
+
+#### Multi tenant
+
+```json
+{
+  "mcpServers": {
+    "sentinel-detection-engine": {
+      "command": "/absolute/path/to/mcp-sentinel-detection-engine/.venv/bin/mcp-sentinel-detection-engine",
+      "env": {
+        "MCP_SENTINEL_TENANTS_FILE": "/etc/mcp-sentinel-detection-engine/tenants.json",
+        "CONTOSO_CERT_PASS": "..."
+      }
+    }
+  }
+}
+```
+
+#### Module form
+
+If the console script isn't where you expect it, invoke the module
+directly instead — same server, same `env` block:
+
+```json
+{
+  "mcpServers": {
+    "sentinel-detection-engine": {
+      "command": "/absolute/path/to/mcp-sentinel-detection-engine/.venv/bin/python",
+      "args": ["-m", "mcp_sentinel_detection_engine.server"]
+    }
+  }
+}
+```
+
+#### Once published to PyPI (not yet available)
+
+`uvx` will fetch and run the server without a clone. **This does not work
+today** — see
+[PyPI installation](#pypi-installation-not-yet-available). Keep using a
+from-source `command` above until then.
 
 ```json
 {
@@ -430,35 +956,28 @@ Add to your MCP client's config (Claude Desktop:
 }
 ```
 
-#### Multi tenant
-
-```json
-{
-  "mcpServers": {
-    "sentinel-detection-engine": {
-      "command": "uvx",
-      "args": ["--from", "mcp-sentinel-detection-engine", "mcp-sentinel-detection-engine"],
-      "env": {
-        "MCP_SENTINEL_TENANTS_FILE": "/etc/mcp-sentinel-detection-engine/tenants.json",
-        "CONTOSO_CERT_PASS": "..."
-      }
-    }
-  }
-}
-```
-
-For the no-credentials offline path (three of the four tools work without
-Azure), see [`examples/README.md`](examples/README.md#quickstart-with-claude-desktop).
+For the no-credentials offline path (`convert_sigma_to_kql`,
+`validate_kql_against_schema`, `generate_sentinel_terraform` and
+`link_hunt_to_rule` work without Azure), see [`examples/README.md`](examples/README.md#quickstart-with-claude-desktop).
 
 ---
 
 ## Security design
 
-**OAuth scopes.** Only one Azure data-plane scope is requested:
-`https://api.loganalytics.io/.default`. The Sentinel rule API surface
-(create/update/delete) is *not* called by this server — rule deployment
+**OAuth scopes.** Two scopes, both used read-only:
+`https://api.loganalytics.io/.default` for `dry_run_kql`, and
+`https://management.azure.com/.default` for the v0.3 rule-inventory and
+drift tools. The management scope is only requested for tenants that
+configure ARM coordinates, the management client can only send `GET`,
+and any other scope is refused. The Sentinel rule write surface
+(create/update/delete) is *not* called by this server. Rule deployment
 happens out-of-band via `terraform apply` under a separate identity
 with elevated permissions, kept off the LLM-facing host.
+`terraform_plan` previews that apply but never runs it. Tenants that
+source their certificate from Azure Key Vault additionally use a
+*separate* bootstrap identity scoped only to the vault
+(`https://vault.azure.net/.default`); see
+[Certificates from a secret store](#certificates-from-a-secret-store).
 
 **Certificate-based auth.** Authentication uses an X.509 certificate
 rather than a client secret. The PFX private key never leaves the host;
@@ -501,19 +1020,48 @@ For the full analysis, see [`THREAT_MODEL.md`](./THREAT_MODEL.md).
 
 `mcp-sentinel-detection-engine` is purpose-built for **detection
 engineering** — taking a Sigma rule and shepherding it through
-conversion, validation, and Terraform emission. The v0.1.x surface
-intentionally includes:
+conversion, validation, and Terraform emission, and then keeping the
+deployed rule honest. The surface intentionally includes:
 
 - Converting Sigma rules to Sentinel KQL via pySigma + `azure_monitor`
   pipeline
 - Static schema validation against a bundled snapshot
 - Read-only live workspace dry-run
 - Terraform HCL emission for `azurerm_sentinel_alert_rule_scheduled`
+- *(v0.3)* Read-only rule inventory and drift detection against the
+  Sentinel management API
+- *(v0.3)* `terraform plan` (plan only) under a separate identity
+- *(v0.3)* Defender XDR hunt → Sentinel rule hand-off
 
-**Out of scope** for v0.1.x and the foreseeable roadmap:
+### Closed-loop detection tuning with `mcp-defender-xdr`
 
-- `terraform apply` — emission only. The apply is a human-gated step
-  in a separate pipeline with its own credentials.
+The two servers are designed to be loaded side by side in the same MCP
+client. Neither depends on the other at runtime; Claude carries the
+context between them:
+
+1. **Hunt** in Defender XDR with
+   [`mcp-defender-xdr`](https://github.com/MFisher14/mcp-defender-xdr)
+   until a query surfaces the behaviour you care about.
+2. **Link.** Pass that query to `link_hunt_to_rule` to get a
+   Sentinel-targeted query plus a Sigma skeleton.
+3. **Ship.** `convert_sigma_to_kql` → `validate_kql_against_schema` →
+   `dry_run_kql` → `generate_sentinel_terraform` → `terraform_plan`,
+   then a human applies the plan in the deployment pipeline.
+4. **Watch.** `detect_rule_drift` keeps the deployed rule matched to
+   git, and the next Defender XDR hunt re-checks the rule's
+   true-positive rate against fresh data.
+
+Only the Defender XDR → Sentinel direction is implemented. Sentinel KQL
+→ Advanced Hunting is asymmetric: Defender's schema is a narrower,
+device/identity/email-centric subset, and many Log Analytics tables
+have no Advanced Hunting equivalent. That direction is documented here
+but not built.
+
+**Out of scope** for the foreseeable roadmap:
+
+- `terraform apply`. `terraform_plan` previews the change, but the
+  apply is a human-gated step in a separate pipeline with its own
+  credentials.
 - Sentinel rule create / update / delete via the management API.
 - Incident triage, alert investigation, threat hunting against
   Sentinel data. Those belong in the companion server
@@ -521,8 +1069,6 @@ intentionally includes:
   which has a complementary read-only surface focused on hunting and
   investigation rather than rule authoring. The two servers compose:
   hunt in Defender XDR, then ship a Sigma rule via this server.
-- Detection-as-code Git workflow integration (`v0.3`).
-- HTTP/SSE transport (`v0.2`); v0.1 is stdio-only.
 
 Keeping the LLM-facing surface read-only against Azure means a
 compromise of the model or its prompt cannot cause state changes in
@@ -541,9 +1087,16 @@ pytest --cov --cov-fail-under=80
 
 CI runs on every push and PR to `main` against Python 3.11 and 3.12.
 
+The [`verify-examples`](.github/workflows/verify-examples.yml) workflow
+converts every rule under [`examples/sigma/`](examples/sigma/) on push,
+PR, and every Monday at 12:00 UTC. The weekly run exists to catch upstream
+`pysigma` / `pysigma-backend-kusto` changes that silently drop a field
+mapping the examples depend on, even when nobody is opening PRs. Run it
+locally with `pytest tests/test_examples.py -v`.
+
 ---
 
 ## Roadmap
 
 See [GitHub Milestones](https://github.com/MFisher14/mcp-sentinel-detection-engine/milestones)
-for the current scope of v0.2, v0.3, and future releases.
+for the current scope of v0.3 and future releases.

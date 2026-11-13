@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-sentinel-detection-engine"
-version = "0.1.0"
+version = "0.2.0"
 description = "An MCP server exposing a Sigma → KQL → Microsoft Sentinel Terraform pipeline to Claude and other MCP clients."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,12 +25,21 @@ classifiers = [
     "Topic :: Security",
 ]
 dependencies = [
-    "mcp>=1.0.0",
+    # Upper bound is deliberate: mcp 2.x renames the protocol field names
+    # (``inputSchema`` → ``input_schema``, ``structuredContent`` →
+    # ``structured_content``, ``isError`` → ``is_error``). Lift it together
+    # with the corresponding rename in ``server.py``. Tracked for v0.2.
+    "mcp>=1.0.0,<2.0.0",
     "msal>=1.29.0",
     "httpx>=0.27.0",
     "pydantic>=2.0.0",
     "pysigma>=1.0.0,<2.0.0",
     "pysigma-backend-kusto>=1.0.0,<2.0.0",
+    # HTTP transport (#2/#3). All three already ship as dependencies of `mcp`;
+    # declared explicitly because we import them directly.
+    "pyjwt[crypto]>=2.8.0",
+    "starlette>=0.27",
+    "uvicorn>=0.23",
 ]
 
 [project.optional-dependencies]
@@ -60,6 +69,8 @@ packages = ["src/mcp_sentinel_detection_engine"]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
+# One-off recording helpers; run from a throwaway venv, not part of the package.
+extend-exclude = ["docs/demo/tools"]
 
 [tool.ruff.lint]
 select = [
@@ -102,7 +113,7 @@ module = ["msal.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["mcp.*"]
+module = ["mcp.*", "uvicorn.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

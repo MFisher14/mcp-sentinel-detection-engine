@@ -6,13 +6,47 @@
       "client_id": "22222222-2222-2222-2222-222222222222",
       "cert_path": "/secrets/contoso.pfx",
       "cert_passphrase_env": "CONTOSO_CERT_PASS",
-      "workspace_id": "55555555-5555-5555-5555-555555555555"
+      "workspace_id": "55555555-5555-5555-5555-555555555555",
+      "subscription_id": "77777777-7777-7777-7777-777777777777",
+      "resource_group": "rg-contoso-sentinel",
+      "workspace_name": "law-contoso-sentinel"
     },
     "fabrikam": {
       "tenant_id": "33333333-3333-3333-3333-333333333333",
       "client_id": "44444444-4444-4444-4444-444444444444",
       "cert_path": "/secrets/fabrikam.pfx",
-      "workspace_id": "66666666-6666-6666-6666-666666666666"
+      "workspace_id": "66666666-6666-6666-6666-666666666666",
+      "rate_limit": {
+        "requests_per_minute": 30,
+        "burst": 5,
+        "circuit_breaker_threshold": 3,
+        "circuit_breaker_cooloff_seconds": 300
+      }
+    },
+    "northwind": {
+      "tenant_id": "77777777-7777-7777-7777-777777777777",
+      "client_id": "88888888-8888-8888-8888-888888888888",
+      "workspace_id": "99999999-9999-9999-9999-999999999999",
+      "key_vault": {
+        "url": "https://northwind-sentinel-kv.vault.azure.net",
+        "certificate_name": "mcp-sentinel-northwind",
+        "bootstrap_identity": { "type": "managed_identity" }
+      }
+    },
+    "tailspin": {
+      "tenant_id": "aaaaaaaa-1111-2222-3333-444444444444",
+      "client_id": "bbbbbbbb-1111-2222-3333-444444444444",
+      "workspace_id": "cccccccc-1111-2222-3333-444444444444",
+      "vault": {
+        "address": "https://vault.internal.example:8200",
+        "mount": "secret",
+        "path": "mcp-sentinel/tailspin",
+        "auth": {
+          "method": "approle",
+          "role_id_env": "VAULT_ROLE_ID",
+          "secret_id_env": "VAULT_SECRET_ID"
+        }
+      }
     }
   }
 }

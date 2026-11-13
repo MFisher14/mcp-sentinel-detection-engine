@@ -53,6 +53,11 @@ omitted in favor of specifics.
   data.** Cannot call the server directly, but their command lines,
   file names, sign-in user agents, and email subjects show up *inside*
   `dry_run_kql` results and can attempt indirect prompt injection.
+- **A4 — A remote network attacker** *(HTTP transport only)*. Can
+  reach the HTTP port but holds no valid token. May try to call tools
+  unauthenticated, replay or forge tokens, use DNS rebinding from a
+  browser, or sniff plaintext traffic. Not present with the default
+  stdio transport.
 - **A3 — A co-tenant of the host machine.** Could read process
   environment or attach to the process to steal the certificate
   passphrase, the PFX bytes, or the access token. Mitigations are
@@ -152,7 +157,8 @@ to "revoke a leaked cert in Azure portal + rotate the PFX." Store PFX
 files on an encrypted volume; rotate the cert annually or on suspected
 exposure. Certs resist *log-scrape* exfiltration (unlike a secret quoted
 in a config) but not *filesystem* exfiltration — that boundary is the
-host OS, not this server.
+host OS, not this server. Tenants sourced from a secret store
+(T11) remove the PFX from the filesystem entirely.
 
 ---
 
@@ -278,7 +284,11 @@ address so the apply *overwrites* a previously-deployed rule's GUID.
 5. **Heredoc-safe query body.** The KQL is wrapped in a `<<-EOT ...
    EOT` heredoc, and the marker is automatically extended (`EOTX`,
    `EOTXX`, ...) if `EOT` appears in the query — a caller cannot break
-   out of the heredoc.
+   out of the heredoc. HCL heredocs are templates, so `${` and `%{`
+   inside the query body are escaped to `$${` / `%%{` exactly as in
+   quoted strings; a query containing `${file("/etc/passwd")}` is
+   emitted as an inert literal. Tested
+   (`test_heredoc_query_template_sequences_are_escaped`).
 
 **Residual risk.** This server emits HCL; it does not apply it. A
 sufficiently broken apply pipeline (running with `Owner` rights, or
@@ -348,6 +358,32 @@ per-tenant `await`.
 
 ---
 
+## T6a — Sensitive custom table names via live schema metadata *(A1)*
+
+**Scenario.** `validate_kql_against_schema` with `tenant` set fetches
+the workspace's full table list from `GET /v1/workspaces/{id}/metadata`.
+Custom table names (`CompanyXSecretEvents_CL`) can themselves reveal
+sensitive information, and the metadata body is upstream-controlled.
+
+**Mitigations.**
+
+1. **Same trust as query rows.** `live_schema.parse_metadata` keeps only
+   names matching the KQL identifier pattern and drops everything else.
+2. **No enumeration through errors.** An unknown table in live mode
+   returns "does not exist in this tenant's workspace" without listing
+   the live tables (the bundled-snapshot error still lists the public
+   snapshot tables). Tested
+   (`test_live_schema_unknown_table_does_not_leak_table_names`).
+3. **Audit the fetch, not the body.** `schema-fetched` records the
+   tenant and table *count* only.
+4. **Opt-in.** Omitting `tenant` keeps the tool pure and offline.
+
+**Residual risk.** A caller with access to a tenant can confirm whether a
+specific table exists by naming it. That is no more than `dry_run_kql`
+already reveals with the same credentials.
+
+---
+
 ## T7 — Rate-limit abuse against Log Analytics *(A1)*
 
 **Scenario.** An adversary triggers many `dry_run_kql` calls — either
@@ -378,12 +414,286 @@ the logs, and can mask other anomalies during a real incident.
    per-call cost an attacker can inflict is small.
 6. **Caller observability.** Every retry path produces an audit log
    record, so an operator can spot abuse.
+7. **Per-tenant token-bucket quota.** `ratelimit.RateLimiter` keeps a
+   bucket per `(tenant_key, tool_name)` (default 60 req/min, burst 10;
+   override per tenant with a `rate_limit` block in the tenants config).
+   An empty bucket fails that tenant's call with `rate_limited` before
+   any HTTP request; other tenants in the same fan-out are unaffected.
+   Tested (`test_fan_out_quota_isolated_per_tenant`).
+8. **Per-tenant circuit breaker.** After `circuit_breaker_threshold`
+   (default 5) consecutive calls end in an upstream 429 with retries
+   exhausted, the tenant cools off for `circuit_breaker_cooloff_seconds`
+   (default 300). During cool-off calls return `rate_limited`
+   immediately with no HTTP attempt. Afterwards one probe call is let
+   through. Tested (`test_breaker_short_circuits_without_http`).
+   `rate-limit-quota-exhausted` and `circuit-breaker-*` state changes
+   are audited.
 
-**Residual risk.** Abuse from a single trusted MCP client (i.e., a
-user with legitimate access to the server) is bounded but not
-prevented; the operator must monitor the audit stream. Per-tenant
-quota / circuit-breaker enforcement during fan-out is on the roadmap
-for v0.3.
+**Residual risk.** Limits are process-local: several server processes
+sharing one App Registration each get their own quota. Cluster-wide
+quota needs a shared store and is out of scope. Within one process,
+abuse from a trusted MCP client is now rate-bounded per tenant, but the
+operator should still monitor the audit stream.
+
+---
+
+## T8 — Transport-layer attacks on the HTTP transport *(A4)*
+
+**Scenario.** With `--transport http`, anyone who can reach the port can
+send MCP requests. Unlike Defender XDR, this server has two damage
+vectors behind that port: read (`dry_run_kql` and live schema against the
+workspace) and *effective* write (HCL from `generate_sentinel_terraform`
+that a downstream apply pipeline may deploy). An attacker may send
+unauthenticated requests, forge tokens (`alg: none`, HS/RS algorithm
+confusion), replay a captured token, present a long-lived token, rebind
+DNS from a victim's browser, or sniff a plaintext connection.
+
+**Mitigations.**
+
+1. **No unauthenticated mode.** The server refuses to start in HTTP mode
+   unless a signing key, `iss`, and `aud` are configured
+   (`BearerTokenValidator.from_env`). `BearerAuthMiddleware` checks every
+   request before it reaches the MCP session manager. Tested
+   (`test_http_rejects_unauthenticated_and_does_not_echo_token`).
+2. **Fixed algorithm list per key type.** An HS256 secret accepts only
+   HS256. A public key accepts only RS256/ES256 and is refused if the file
+   contains a private key. `alg: none` and HS256-signed-with-public-key
+   tokens are rejected. Tested (`test_alg_none_rejected`,
+   `test_rs256_public_key`).
+3. **Short-lived, instance-bound tokens.** `iss`, `aud`, `iat`, `exp`,
+   and `jti` are required. `exp - iat` may not exceed 15 minutes by
+   default. Tokens issued in the future are rejected. A unique `aud` per
+   server instance stops a token minted for one instance from working on
+   another.
+4. **Replay.** The short TTL bounds the replay window by default. With
+   `MCP_SENTINEL_HTTP_AUTH_SINGLE_USE=1`, every `jti` is accepted exactly
+   once (seen-set pruned at expiry). Tested
+   (`test_single_use_rejects_replay`).
+5. **No token echo.** Rejections return a generic `401` with
+   `WWW-Authenticate: Bearer error="invalid_token"`. The audit line
+   records a reason code (`expired`, `wrong_audience`, ...) and the
+   client host, never the token.
+6. **DNS-rebinding protection.** The MCP SDK's
+   `TransportSecuritySettings` allow-list rejects unexpected `Host`
+   headers and all browser `Origin`s. Tested
+   (`test_http_rejects_dns_rebinding_host`).
+7. **Loopback by default, TLS supported.** The default bind is
+   `127.0.0.1`. Binding a non-loopback address without
+   `MCP_SENTINEL_HTTP_TLS_CERT` logs `http-transport-plaintext-non-loopback`.
+8. **Shared secret hygiene.** The HS256 secret file must be `0600` and
+   at least 32 bytes.
+
+**Residual risk.** Any holder of a valid token can use every tool for the
+token's lifetime. There are no per-tool scopes yet. Without single-use
+mode, a captured token can be replayed within its TTL, so TLS is required
+for any non-loopback deployment. Per-tenant rate limits (T7) still apply
+to HTTP callers.
+
+---
+
+## T9 — Management-plane scope expansion *(A1, A2)*
+
+**Scenario.** v0.3 adds `list_deployed_sentinel_rules` and
+`detect_rule_drift`, which read alert rules from Azure Resource Manager.
+That needs a token for `https://management.azure.com/.default`, which is
+far broader than the Log Analytics query scope: the same token could, if
+the App Registration held write roles, create, change or delete *any*
+ARM resource the principal can reach. Separately, rule display names,
+descriptions and queries returned by ARM are attacker-influenced
+content (A2 could have named a rule, or an insider could have edited
+one in the portal).
+
+**Why the broader scope is justified.** The Sentinel rule inventory and
+rule definitions are only exposed on the management plane; there is no
+Log Analytics data-plane equivalent. Drift detection is impossible
+without it.
+
+**Mitigations.**
+
+1. **RBAC, not the token, is the real boundary.** The documented role
+   is `Microsoft Sentinel Reader` at the workspace scope. ARM enforces
+   that on every request, so a token for a reader-only principal
+   cannot write regardless of its audience. Operators must not grant
+   the App Registration `Contributor` / `Sentinel Contributor`.
+2. **GET-only client.** `ManagementClient` exposes `get`,
+   `list_alert_rules` and `get_alert_rule` and nothing else; there is no
+   code path that sends `PUT` / `PATCH` / `DELETE` / `POST` to ARM.
+3. **Scope allowlist.** `TokenManager.get_token(scope=...)` rejects any
+   scope other than Log Analytics and `management.azure.com`. Tested
+   (`test_token_manager_rejects_unlisted_scope`). Tokens are cached per
+   `(tenant_key, scope)` so the two audiences never mix. Tested
+   (`test_token_manager_caches_per_scope`).
+4. **Server-side ARM coordinates.** `subscription_id`,
+   `resource_group` and `workspace_name` come from the tenant config,
+   are validated at load time (GUID / ARM naming rules), and are
+   URL-quoted into the path. The caller can't point a request at a
+   different subscription. A caller-supplied `rule_id` must be a GUID
+   and is URL-quoted as well. Tested
+   (`test_json_provider_validates_management_fields`,
+   `test_management_client_get_rule_quotes_id`).
+5. **Same-origin pagination.** `nextLink` cursors come from the
+   upstream response. `AzureRestClient._build_url` only follows absolute
+   URLs that start with the configured ARM base URL, so a tampered
+   cursor can't redirect the bearer token to a third-party host.
+   Tested (`test_management_client_refuses_foreign_next_link`).
+   Pagination is capped at 20 pages.
+6. **Opt-in per tenant.** Management access is only enabled for tenants
+   that configure the ARM coordinates; the others get a structured
+   `invalid_input` error without any token being minted.
+7. **Untrusted output.** `list_deployed_sentinel_rules` returns a fixed
+   summary projection (no query bodies); `detect_rule_drift` returns
+   live values only as diff data. Tool descriptions tell the model to
+   treat them as untrusted, which is the same posture as T1 / `dry_run_kql`.
+
+**Residual risk.** An operator who grants the App Registration a write
+role at subscription scope turns a prompt-injection compromise of the
+*server process* (not just the model) into ARM write access. The
+server can't detect over-privileged role assignments; that's a
+deployment review item.
+
+---
+
+## T10 — Subprocess execution and state isolation in `terraform_plan` *(A1)*
+
+**Scenario.** `terraform_plan` executes the `terraform` binary on
+model-supplied HCL. An attacker who controls the HCL could try to run
+arbitrary commands (`provisioner "local-exec"`, `data "external"`),
+read local files (`file()`, `templatefile()`), exfiltrate environment
+secrets, pull in remote code (`module` sources), or tamper with
+Terraform state. Running `apply` would turn a model-side compromise
+into a production change.
+
+**Mitigations.**
+
+1. **Strict HCL allowlist.** `hcl_parse.parse_rules` accepts only
+   top-level `resource "azurerm_sentinel_alert_rule_scheduled"` blocks
+   whose attributes are literals (strings, bools, ints, string lists,
+   heredocs) or the single reference `var.log_analytics_workspace_id`.
+   Nested blocks (`provisioner`, `lifecycle`, `dynamic`), other
+   resource types, `data` / `module` / `locals` / `provider` blocks,
+   function calls and unescaped `${` / `%{` templates are all rejected
+   before any file is written. Tested (`tests/test_hcl_parse.py`,
+   `test_plan_rejects_bad_input`).
+2. **Plan only.** The runner executes exactly `init`, `plan -lock=false
+   -out=plan.bin` and `show -json plan.bin`. There's no `apply` code
+   path. `-lock=false` means the plan identity only needs read access
+   to the state blob. Tested (`test_plan_happy_path` asserts the
+   command sequence).
+3. **No shell.** `asyncio.create_subprocess_exec` with an argv list;
+   the binary is resolved with `shutil.which`. The workspace ID is
+   validated against the ARM resource-ID shape before it goes into a
+   `-var=` argument.
+4. **Throwaway working directory.** Each run uses a fresh
+   `tempfile.mkdtemp` directory that is removed in a `finally` block,
+   including on failure and timeout. Tested (the scratch dir is gone
+   after both success and failure).
+5. **Environment allowlist, separate identity.** The child gets
+   `PATH`, `ARM_*`, proxy/TLS variables and `TF_PLUGIN_CACHE_DIR`
+   only. The server's `AZURE_*` certificate variables, passphrases and
+   tenants file are not passed, and `HOME` is set to the scratch
+   directory so Terraform can't fall back to a cached Azure CLI login.
+   The tool refuses to run if `ARM_CLIENT_ID` equals any App
+   Registration the server itself queries with. Tested
+   (`test_build_child_env_allowlist`,
+   `test_plan_rejects_same_identity`).
+6. **State isolation.** The backend comes from the operator-controlled
+   `MCP_SENTINEL_TF_BACKEND_CONFIG` file and is never model-supplied.
+   It should point at state owned by the separate plan identity; the
+   MCP server's App Registration has no access to it.
+7. **Bounded runtime.** Per-stage timeouts (init 180 s, plan 300 s,
+   show 60 s) kill the whole process group, including provider plugin
+   children. Output is truncated to 20 000 characters.
+8. **Audit.** Each invocation logs the sha256 of the input HCL, the
+   target workspace resource ID and the outcome stage.
+
+**Residual risk.** `terraform init` downloads the `azurerm` provider
+from the public registry (supply chain; use `TF_PLUGIN_CACHE_DIR` or a
+network mirror to pin it). `terraform plan` refreshes state using the
+plan identity's credentials, so that identity needs read access to the
+workspace's alert rules. Plan output includes the rule definitions,
+which the model already supplied.
+
+---
+
+## T11 — Secret-store credential retrieval and the bootstrap-identity boundary *(A1, A3)*
+
+**Scenario.** With a `key_vault` or `vault` block in the tenants
+config, the PFX for each tenant's App Registration lives in Azure Key
+Vault or HashiCorp Vault rather than on disk. That adds a new
+credential, the **bootstrap identity** (a managed identity, a separate
+App Registration, or a Vault token / AppRole / Kubernetes role), whose
+compromise reveals *every* tenant certificate it can read. It also
+creates new leak paths: secret-store URLs, secret names, and token
+sources showing up in error messages, the PFX body showing up in logs,
+and a tampered config pointing the server at an attacker-controlled
+"vault" that serves a certificate of the attacker's choosing.
+
+**Mitigations.**
+
+1. **Separate bootstrap identity, read-only scope.** The PFX can't
+   fetch itself, so Key Vault is reached with a distinct identity whose
+   token is scoped to the vault resource only
+   (`https://vault.azure.net/.default`, or the sovereign-cloud
+   equivalent derived from the vault hostname). Grant it `Key Vault
+   Secrets User` on the one vault, and nothing on the Log Analytics
+   workspace. For HashiCorp Vault, the policy attached to the
+   token / AppRole / Kubernetes role should allow `read` on
+   `<mount>/data/<path>` only. A stolen bootstrap credential then
+   reveals certificates but cannot query Sentinel by itself. Each of
+   those certificates is still bound to its own read-only Log Analytics
+   role (T2).
+2. **Destination pinning.** Key Vault URLs must be `https` on a
+   `*.vault.azure.net` / `*.vault.azure.cn` /
+   `*.vault.usgovcloudapi.net` host with no path, query, port or
+   userinfo (`credentials/keyvault.validate_vault_url`). Vault
+   addresses must be `https` (plain `http` only for
+   `localhost`/`127.0.0.1` dev servers), and mount, path and namespace
+   must be `[A-Za-z0-9_.-]` segments with no `..`. A config edit can't
+   point the bearer token at an arbitrary host or path-traverse the
+   Vault API. Tested (`test_validate_vault_url_rejects_without_echo`,
+   `test_parse_vault_block_rejects`).
+3. **No oracle in errors.** Every fetch failure raises `AuthError` with
+   a fixed message plus at most the HTTP status code. The vault URL,
+   certificate/secret name, secret path, token env-var name and token
+   value never appear. Tested
+   (`test_fetch_http_errors_do_not_echo_vault_or_cert`,
+   `test_read_errors_do_not_echo_path_or_token_source`). Unexpected
+   exceptions inside a backend become a generic
+   `Failed to retrieve certificate from secret store`
+   (`CachingPfxSource`).
+4. **Audit the fetch, not the body.** `secret-store-fetch-succeeded` /
+   `-failed` records carry only the tenant key, the store type
+   (`key_vault` / `hashicorp_vault`), whether the certificate changed
+   (`rotated`), and on failure the exception class. The PFX bytes,
+   the passphrase and the bootstrap token are never logged.
+5. **Memory only.** The PFX is decoded and, if it has a passphrase,
+   decrypted once in memory (`credentials/pfx.normalize_pfx`), then
+   passed to MSAL as a PEM key + certificate. Nothing is written to a
+   temp file. Fetches are lazy (first token acquisition), so a
+   secret-store outage degrades `dry_run_kql` to `auth_failure`
+   rather than blocking server start or the offline tools.
+6. **Rotation without restart.** Fetched certificates are cached for
+   one hour. `TokenManager` fingerprints the PFX bytes and rebuilds the
+   tenant's MSAL app when they change (audited as
+   `certificate-rotated`), so a Key Vault auto-rotation or a Vault
+   secret update is picked up on a following token refresh.
+7. **Vault token hygiene.** Response-wrapped tokens are unwrapped
+   exactly once. Tokens are renewed via `auth/token/renew-self` once
+   the remaining TTL falls under the 60 s leeway. Non-renewable
+   AppRole / Kubernetes tokens are replaced by a fresh login, and a
+   `403` on read gets one re-login before failing (covers out-of-band
+   revocation).
+
+**Residual risk.** The bootstrap identity is now the
+highest-value credential on the host. Whoever holds it can read every
+tenant PFX it is authorized for, so it is the thing to monitor
+(Key Vault diagnostic logs, Vault audit device). On a VM, any process
+that can reach IMDS can mint the managed-identity token, so co-tenant
+processes on the same host (A3) still share that trust. The decrypted
+key lives in process memory for the process lifetime, as in T4. A
+cluster-wide revocation fan-out (forcing every server process to drop
+a certificate immediately) is out of scope: revocation takes effect
+when Azure AD rejects the certificate or within the one-hour cache TTL.
 
 ---
 
@@ -398,8 +708,8 @@ for v0.3.
   need per-user RBAC should layer it in front of the MCP client, not
   inside the server.
 - **End-to-end encryption of stdio.** stdio is a process-local pipe;
-  if the threat model requires network-layer crypto, use HTTP/SSE
-  transport (planned v0.2) over TLS.
+  if the threat model requires network-layer crypto, use the HTTP
+  transport over TLS (T8).
 - **Write-scope rule deployment.** Emission only. The apply step,
   with its write credentials and `terraform plan` review gate, lives
   in a separate pipeline that this server never touches.

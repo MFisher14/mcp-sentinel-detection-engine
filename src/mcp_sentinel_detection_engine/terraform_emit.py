@@ -46,6 +46,9 @@ def _format_heredoc(query: str) -> str:
     marker = "EOT"
     while marker in query:
         marker += "X"
+    # Heredocs are templates in HCL: ``${...}`` and ``%{...}`` are evaluated at
+    # plan time just like in quoted strings, so escape them the same way.
+    query = query.replace("${", "$${").replace("%{", "%%{")
     lines = query.split("\n")
     body = "\n".join("    " + line if line else "" for line in lines)
     return f"<<-{marker}\n{body}\n  {marker}"

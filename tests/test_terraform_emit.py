@@ -75,3 +75,26 @@ def test_empty_lists_render_as_empty_arrays() -> None:
     )
     assert "tactics                    = []" in hcl
     assert "techniques                 = []" in hcl
+
+
+def test_heredoc_query_template_sequences_are_escaped() -> None:
+    hcl = emit_terraform(
+        'SecurityEvent | where Account == "${file(\'/etc/passwd\')}" or X == "%{if true}"',
+        _metadata(),
+    )
+    assert "$${file(" in hcl
+    assert "%%{if true}" in hcl
+    assert '"${file(' not in hcl
+
+
+def test_emitted_hcl_round_trips_through_strict_parser() -> None:
+    from mcp_sentinel_detection_engine.hcl_parse import VariableRef, parse_rules
+
+    query = 'SecurityEvent\n| where EventID == 4625\n| extend X = "${y}"'
+    hcl = emit_terraform(query, _metadata(description='Has "quotes"\nand newline'))
+    (rule,) = parse_rules(hcl)
+    assert rule.attributes["query"] == query
+    assert rule.attributes["description"] == 'Has "quotes"\nand newline'
+    assert rule.attributes["log_analytics_workspace_id"] == VariableRef(
+        "var.log_analytics_workspace_id"
+    )

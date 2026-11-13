@@ -6,6 +6,36 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- `validate_kql_against_schema` validates against the live workspace
+  schema from the Log Analytics metadata API when `tenant` is set
+  (including `"*"` fan-out), cached per tenant for the process lifetime.
+  The bundled snapshot remains the offline default; responses report
+  `metadata.schema_source`. THREAT_MODEL adds T6a. (#1)
+- Streamable HTTP transport (SSE response streams) at `/mcp` via
+  `--transport http` / `MCP_SENTINEL_TRANSPORT=http`. stdio remains the
+  default. Every audit line now carries a `transport` field. (#2)
+- Mandatory bearer-token (JWT) auth for the HTTP transport: HS256 shared
+  secret or RS256/ES256 public key, required `iss`/`aud`/`iat`/`exp`/`jti`,
+  15-minute max lifetime, optional single-use `jti`, DNS-rebinding
+  protection. `examples/mint_http_token.py` is a reference minter.
+  THREAT_MODEL adds A4 and T8. (#3)
+- Per-tenant token-bucket quota per `(tenant, tool)` and a per-tenant
+  circuit breaker that short-circuits calls after repeated upstream 429s,
+  configurable via a `rate_limit` block per tenant. THREAT_MODEL T7
+  updated. (#4)
+- `verify-examples` GitHub Actions workflow: converts every bundled Sigma
+  example on push, PR, and weekly (Mon 12:00 UTC). (#19)
+- Demo recording (`docs/demo/`): asciicast, GIF, and screenshots of a real
+  Claude Code session driving all four tools against a mocked workspace,
+  embedded in the README. (#20)
+- `convert_sigma_to_kql` prepends a `//` provenance header to every query
+  (server version, threat-model reference, Sigma rule id) and returns
+  `sigma_id` per query. `MCP_SENTINEL_THREAT_MODEL_REF` overrides the
+  reference. `validate_kql_against_schema` skips `//` comments when
+  extracting columns, so the header is not reported. (#21)
+
 ## [0.2.0] - 2026-09-05
 
 A build-repair, correctness and documentation release. No breaking

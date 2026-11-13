@@ -53,6 +53,11 @@ omitted in favor of specifics.
   data.** Cannot call the server directly, but their command lines,
   file names, sign-in user agents, and email subjects show up *inside*
   `dry_run_kql` results and can attempt indirect prompt injection.
+- **A4 — A remote network attacker** *(HTTP transport only)*. Can
+  reach the HTTP port but holds no valid token. May try to call tools
+  unauthenticated, replay or forge tokens, use DNS rebinding from a
+  browser, or sniff plaintext traffic. Not present with the default
+  stdio transport.
 - **A3 — A co-tenant of the host machine.** Could read process
   environment or attach to the process to steal the certificate
   passphrase, the PFX bytes, or the access token. Mitigations are
@@ -348,6 +353,32 @@ per-tenant `await`.
 
 ---
 
+## T6a — Sensitive custom table names via live schema metadata *(A1)*
+
+**Scenario.** `validate_kql_against_schema` with `tenant` set fetches
+the workspace's full table list from `GET /v1/workspaces/{id}/metadata`.
+Custom table names (`CompanyXSecretEvents_CL`) can themselves reveal
+sensitive information, and the metadata body is upstream-controlled.
+
+**Mitigations.**
+
+1. **Same trust as query rows.** `live_schema.parse_metadata` keeps only
+   names matching the KQL identifier pattern and drops everything else.
+2. **No enumeration through errors.** An unknown table in live mode
+   returns "does not exist in this tenant's workspace" without listing
+   the live tables (the bundled-snapshot error still lists the public
+   snapshot tables). Tested
+   (`test_live_schema_unknown_table_does_not_leak_table_names`).
+3. **Audit the fetch, not the body.** `schema-fetched` records the
+   tenant and table *count* only.
+4. **Opt-in.** Omitting `tenant` keeps the tool pure and offline.
+
+**Residual risk.** A caller with access to a tenant can confirm whether a
+specific table exists by naming it. That is no more than `dry_run_kql`
+already reveals with the same credentials.
+
+---
+
 ## T7 — Rate-limit abuse against Log Analytics *(A1)*
 
 **Scenario.** An adversary triggers many `dry_run_kql` calls — either
@@ -378,12 +409,80 @@ the logs, and can mask other anomalies during a real incident.
    per-call cost an attacker can inflict is small.
 6. **Caller observability.** Every retry path produces an audit log
    record, so an operator can spot abuse.
+7. **Per-tenant token-bucket quota.** `ratelimit.RateLimiter` keeps a
+   bucket per `(tenant_key, tool_name)` (default 60 req/min, burst 10;
+   override per tenant with a `rate_limit` block in the tenants config).
+   An empty bucket fails that tenant's call with `rate_limited` before
+   any HTTP request; other tenants in the same fan-out are unaffected.
+   Tested (`test_fan_out_quota_isolated_per_tenant`).
+8. **Per-tenant circuit breaker.** After `circuit_breaker_threshold`
+   (default 5) consecutive calls end in an upstream 429 with retries
+   exhausted, the tenant cools off for `circuit_breaker_cooloff_seconds`
+   (default 300). During cool-off calls return `rate_limited`
+   immediately with no HTTP attempt. Afterwards one probe call is let
+   through. Tested (`test_breaker_short_circuits_without_http`).
+   `rate-limit-quota-exhausted` and `circuit-breaker-*` state changes
+   are audited.
 
-**Residual risk.** Abuse from a single trusted MCP client (i.e., a
-user with legitimate access to the server) is bounded but not
-prevented; the operator must monitor the audit stream. Per-tenant
-quota / circuit-breaker enforcement during fan-out is on the roadmap
-for v0.3.
+**Residual risk.** Limits are process-local: several server processes
+sharing one App Registration each get their own quota. Cluster-wide
+quota needs a shared store and is out of scope. Within one process,
+abuse from a trusted MCP client is now rate-bounded per tenant, but the
+operator should still monitor the audit stream.
+
+---
+
+## T8 — Transport-layer attacks on the HTTP transport *(A4)*
+
+**Scenario.** With `--transport http`, anyone who can reach the port can
+send MCP requests. Unlike Defender XDR, this server has two damage
+vectors behind that port: read (`dry_run_kql` and live schema against the
+workspace) and *effective* write (HCL from `generate_sentinel_terraform`
+that a downstream apply pipeline may deploy). An attacker may send
+unauthenticated requests, forge tokens (`alg: none`, HS/RS algorithm
+confusion), replay a captured token, present a long-lived token, rebind
+DNS from a victim's browser, or sniff a plaintext connection.
+
+**Mitigations.**
+
+1. **No unauthenticated mode.** The server refuses to start in HTTP mode
+   unless a signing key, `iss`, and `aud` are configured
+   (`BearerTokenValidator.from_env`). `BearerAuthMiddleware` checks every
+   request before it reaches the MCP session manager. Tested
+   (`test_http_rejects_unauthenticated_and_does_not_echo_token`).
+2. **Fixed algorithm list per key type.** An HS256 secret accepts only
+   HS256. A public key accepts only RS256/ES256 and is refused if the file
+   contains a private key. `alg: none` and HS256-signed-with-public-key
+   tokens are rejected. Tested (`test_alg_none_rejected`,
+   `test_rs256_public_key`).
+3. **Short-lived, instance-bound tokens.** `iss`, `aud`, `iat`, `exp`,
+   and `jti` are required. `exp - iat` may not exceed 15 minutes by
+   default. Tokens issued in the future are rejected. A unique `aud` per
+   server instance stops a token minted for one instance from working on
+   another.
+4. **Replay.** The short TTL bounds the replay window by default. With
+   `MCP_SENTINEL_HTTP_AUTH_SINGLE_USE=1`, every `jti` is accepted exactly
+   once (seen-set pruned at expiry). Tested
+   (`test_single_use_rejects_replay`).
+5. **No token echo.** Rejections return a generic `401` with
+   `WWW-Authenticate: Bearer error="invalid_token"`. The audit line
+   records a reason code (`expired`, `wrong_audience`, ...) and the
+   client host, never the token.
+6. **DNS-rebinding protection.** The MCP SDK's
+   `TransportSecuritySettings` allow-list rejects unexpected `Host`
+   headers and all browser `Origin`s. Tested
+   (`test_http_rejects_dns_rebinding_host`).
+7. **Loopback by default, TLS supported.** The default bind is
+   `127.0.0.1`. Binding a non-loopback address without
+   `MCP_SENTINEL_HTTP_TLS_CERT` logs `http-transport-plaintext-non-loopback`.
+8. **Shared secret hygiene.** The HS256 secret file must be `0600` and
+   at least 32 bytes.
+
+**Residual risk.** Any holder of a valid token can use every tool for the
+token's lifetime. There are no per-tool scopes yet. Without single-use
+mode, a captured token can be replayed within its TTL, so TLS is required
+for any non-loopback deployment. Per-tenant rate limits (T7) still apply
+to HTTP callers.
 
 ---
 
@@ -398,8 +497,8 @@ for v0.3.
   need per-user RBAC should layer it in front of the MCP client, not
   inside the server.
 - **End-to-end encryption of stdio.** stdio is a process-local pipe;
-  if the threat model requires network-layer crypto, use HTTP/SSE
-  transport (planned v0.2) over TLS.
+  if the threat model requires network-layer crypto, use the HTTP
+  transport over TLS (T8).
 - **Write-scope rule deployment.** Emission only. The apply step,
   with its write credentials and `terraform plan` review gate, lives
   in a separate pipeline that this server never touches.

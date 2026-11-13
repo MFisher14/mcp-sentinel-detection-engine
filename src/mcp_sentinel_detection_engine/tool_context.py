@@ -9,6 +9,7 @@ from typing import Self
 import httpx
 
 from .auth import TokenManager
+from .ratelimit import RateLimiter
 from .sentinel_client import SentinelClient
 
 _USER_AGENT = (
@@ -26,6 +27,7 @@ class ToolContext(AbstractAsyncContextManager["ToolContext"]):
         *,
         http_client: httpx.AsyncClient | None = None,
         max_fan_out: int = 5,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self._token_manager = token_manager
         self._owns_http = http_client is None
@@ -33,6 +35,7 @@ class ToolContext(AbstractAsyncContextManager["ToolContext"]):
             headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
         )
         self._max_fan_out = max_fan_out
+        self._rate_limiter = rate_limiter or RateLimiter(token_manager.rate_limit_configs())
 
     @property
     def token_manager(self) -> TokenManager:
@@ -41,6 +44,10 @@ class ToolContext(AbstractAsyncContextManager["ToolContext"]):
     @property
     def default_tenant_key(self) -> str:
         return self._token_manager.default_tenant_key
+
+    @property
+    def rate_limiter(self) -> RateLimiter:
+        return self._rate_limiter
 
     @property
     def max_fan_out(self) -> int:

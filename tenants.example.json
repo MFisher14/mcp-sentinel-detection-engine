@@ -12,7 +12,13 @@
       "tenant_id": "33333333-3333-3333-3333-333333333333",
       "client_id": "44444444-4444-4444-4444-444444444444",
       "cert_path": "/secrets/fabrikam.pfx",
-      "workspace_id": "66666666-6666-6666-6666-666666666666"
+      "workspace_id": "66666666-6666-6666-6666-666666666666",
+      "rate_limit": {
+        "requests_per_minute": 30,
+        "burst": 5,
+        "circuit_breaker_threshold": 3,
+        "circuit_breaker_cooloff_seconds": 300
+      }
     }
   }
 }

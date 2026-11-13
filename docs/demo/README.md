@@ -1,19 +1,55 @@
-# Recording the pipeline demo
+# Demo recordings
 
-The asset this directory holds is the one thing the README cannot say in
-prose: the full **Sigma → KQL → validate → Terraform** loop running in
+## Included recording (Claude Code)
+
+`sentinel-pipeline.cast` (asciicast v2, ~62 s) and `sentinel-pipeline.gif`
+are a real, unedited Claude Code session driving all four tools against
+`examples/sigma/failed_logon_burst.yml`. The PNGs are frames from that
+session.
+
+**No real credentials or tenant data.** The MCP server was launched via
+[`demo_server.py`](demo_server.py), which runs the production server with
+all-zero placeholder IDs, a stub token, and an in-process mock Log Analytics
+API that returns fictional rows (RFC 5737 TEST-NET IPs, `contoso.local`).
+Two edits were made after recording: the local checkout path was replaced
+with a same-length placeholder (`/home/detection-engr/`), and idle gaps
+were capped at 1.5 s.
+
+Play it locally with `asciinema play docs/demo/sentinel-pipeline.cast`.
+
+### Re-recording it
+
+`tools/` holds the scripts used (they need `pexpect` and `pyte` in a
+throwaway venv, not the project's):
+
+1. `tools/record.py out.cast "<prompt>" mcp.json <cwd>` drives an
+   interactive `claude` session in a pty with `--strict-mcp-config` and
+   writes the cast. `mcp.json` points `sentinel` at `demo_server.py`.
+2. Scrub local paths and identifiers from the cast. Check it with
+   `grep -i "$USER" out.cast` before committing; asciinema records raw
+   terminal bytes.
+3. `tools/snap.py` renders one frame to HTML and `tools/gifframes.py`
+   renders all frames. Screenshot them with headless Chrome and encode the
+   GIF with ffmpeg.
+
+## Recording it yourself in Claude Desktop
+
+A manual four-turn script for a credential-free Claude Desktop take. It shows
+the typo-catching beat, which the included recording does not.
+
+This take shows the full **Sigma → KQL → validate → Terraform** loop running in
 Claude Desktop, start to finish, **with no Azure credentials**. Three of
 the four tools are pure functions, so the whole demo is reproducible on
 any machine with a clone and a Python 3.11+ venv — no tenant, no
 workspace, no certificate.
 
-- **Asset:** `docs/demo/sentinel-detection-loop.gif`
+- **Asset (not yet recorded):** `docs/demo/sentinel-detection-loop.gif`
 - **Runtime:** about 50–70 seconds at a readable pace
 - **Rules used:** `examples/sigma/failed_logon_burst.yml` (bundled)
 
 ---
 
-## 1. Setup
+### 1. Setup
 
 Install from source and wire the server into Claude Desktop with the
 no-credentials snippet:
@@ -47,13 +83,13 @@ server — but `sigma_path` must be **absolute**.
 
 ---
 
-## 2. Script
+### 2. Script
 
 Four turns. Type each prompt verbatim, substituting your clone's
 absolute path for `<REPO>`. Wait for each tool card to finish rendering
 before typing the next one.
 
-### Turn 1 — convert
+#### Turn 1 — convert
 
 > Convert the Sigma rule at
 > `<REPO>/examples/sigma/failed_logon_burst.yml` to Sentinel KQL.
@@ -68,7 +104,7 @@ SecurityEvent
 The rule's Windows logsource auto-maps to `SecurityEvent`, so no
 `target_table` is needed — worth saying aloud in a voiced version.
 
-### Turn 2 — validate, and catch the typo
+#### Turn 2 — validate, and catch the typo
 
 The misspelling is the point of this beat: `LogonTpye` for `LogonType`.
 
@@ -92,14 +128,14 @@ This is the money frame: the typo is caught and the correction proposed
 offline, against the bundled schema snapshot, with no workspace
 round-trip.
 
-### Turn 3 — confirm the fix
+#### Turn 3 — confirm the fix
 
 > Fix it and re-validate.
 
 Expect `"valid": true` with an empty `unknown_columns`. Short beat, but
 it closes the loop — without it the viewer only sees a failure.
 
-### Turn 4 — emit Terraform
+#### Turn 4 — emit Terraform
 
 > Now emit the Terraform for the corrected query. Call it
 > `failed_logon_burst`, severity Medium, run it every 10 minutes over a
@@ -137,12 +173,12 @@ the last frame is readable in the GIF's paused state.
 
 ---
 
-## 3. Capture
+### 3. Capture
 
 **Record video first, convert to GIF second.** Direct-to-GIF screen
 recorders produce files several times larger at the same visual quality.
 
-### Window and legibility
+#### Window and legibility
 
 GitHub renders README images at roughly **880 px** wide and does not let
 the reader zoom. Legibility at that width is the whole constraint:
@@ -159,7 +195,7 @@ Sanity check before you invest in a take: screenshot one frame, scale it
 to 880 px wide, and read it at 100%. If the KQL is a struggle, raise the
 zoom and redo it — no amount of encoding rescues text that is too small.
 
-### Recording
+#### Recording
 
 ```bash
 # macOS — Cmd-Shift-5, "Record Selected Portion", or headless:
@@ -172,7 +208,7 @@ ffmpeg -f x11grab -framerate 30 -video_size 1280x800 -i :0.0+0,0 /tmp/demo-raw.m
 Record at 30 fps and drop frames during encoding — it is far easier than
 recovering smoothness from a choppy source.
 
-### Trim the dead air
+#### Trim the dead air
 
 Model latency between turns is the single biggest driver of file size.
 Cut every gap down to about a second:
@@ -187,7 +223,7 @@ with `-filter:v "setpts=PTS/1.5"` and leave the reading beats alone.
 
 ---
 
-## 4. Encode the GIF
+### 4. Encode the GIF
 
 Two-pass palette generation. A single-pass `ffmpeg -i in.mp4 out.gif`
 uses a fixed 216-colour web palette and looks visibly worse at a *larger*
@@ -227,7 +263,7 @@ Why these values:
   better than the default Floyd–Steinberg, which adds per-frame noise
   that inflates a GIF badly.
 
-### Staying under 10 MB
+#### Staying under 10 MB
 
 Budget target is **≤ 8 MB**, leaving headroom under GitHub's 10 MB
 rendering limit. In descending order of effect:
@@ -251,7 +287,10 @@ which is why the committed asset is a GIF.
 
 ---
 
-## 5. Placement and embed
+### 5. Placement and embed
+
+The README currently embeds the Claude Code recording above. If you record
+this Claude Desktop take, it can sit alongside it or replace it.
 
 Commit the GIF to `docs/demo/sentinel-detection-loop.gif` — beside this
 guide, out of the repository root.
@@ -260,7 +299,7 @@ It is embedded near the top of [`README.md`](../../README.md), directly
 above the table of contents:
 
 ```markdown
-## Demo
+### Demo
 
 ![Claude Desktop driving convert_sigma_to_kql, validate_kql_against_schema, and generate_sentinel_terraform against a bundled Sigma rule, with no Azure credentials configured](docs/demo/sentinel-detection-loop.gif)
 

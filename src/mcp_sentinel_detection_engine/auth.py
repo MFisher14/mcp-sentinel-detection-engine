@@ -19,6 +19,7 @@ import msal
 
 from .audit import audit
 from .errors import AuthError
+from .ratelimit import RateLimitConfig, parse_rate_limits
 
 DEFAULT_LOGANALYTICS_RESOURCE = "https://api.loganalytics.io"
 DEFAULT_LOGANALYTICS_SCOPE = f"{DEFAULT_LOGANALYTICS_RESOURCE}/.default"
@@ -69,6 +70,10 @@ class CredentialProvider(ABC):
     @property
     def default_tenant_key(self) -> str:
         return DEFAULT_TENANT_KEY
+
+    def rate_limit_configs(self) -> dict[str, RateLimitConfig]:
+        """Per-tenant quota overrides; tenants not listed use the defaults."""
+        return {}
 
 
 def _require_pfx_readable(path: str, *, source: str) -> None:
@@ -145,6 +150,7 @@ class JsonFileCredentialProvider(CredentialProvider):
             raise AuthError(f"Tenants config is not valid JSON: {self._path}") from exc
 
         self._default_tenant, self._tenants = self._parse(data, env_source)
+        self._rate_limits = parse_rate_limits(data["tenants"])
 
     @staticmethod
     def _check_permissions(path: Path) -> None:
@@ -243,6 +249,9 @@ class JsonFileCredentialProvider(CredentialProvider):
     def list_tenants(self) -> list[str]:
         return sorted(self._tenants.keys())
 
+    def rate_limit_configs(self) -> dict[str, RateLimitConfig]:
+        return dict(self._rate_limits)
+
     @property
     def default_tenant_key(self) -> str:
         return self._default_tenant
@@ -316,6 +325,9 @@ class TokenManager:
 
     def list_tenants(self) -> list[str]:
         return self._credential_provider.list_tenants()
+
+    def rate_limit_configs(self) -> dict[str, RateLimitConfig]:
+        return self._credential_provider.rate_limit_configs()
 
     def get_credentials(self, tenant_key: str = DEFAULT_TENANT_KEY) -> AzureCredentials:
         return self._credential_provider.get_credentials(tenant_key)
@@ -394,6 +406,15 @@ class LazyCredentialProvider(CredentialProvider):
     @property
     def default_tenant_key(self) -> str:
         return self._provider().default_tenant_key
+
+    def rate_limit_configs(self) -> dict[str, RateLimitConfig]:
+        # Read once at server start to build the RateLimiter. An unconfigured
+        # or malformed host gets the defaults here; the AuthError still
+        # surfaces from the first tool call that needs credentials.
+        try:
+            return self._provider().rate_limit_configs()
+        except AuthError:
+            return {}
 
 
 def _build_configured_provider() -> CredentialProvider:

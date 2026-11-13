@@ -15,7 +15,9 @@ TOOL_NAME = "convert_sigma_to_kql"
 TOOL_DESCRIPTION = (
     "Convert a Sigma rule (YAML string or filesystem path) into Microsoft "
     "Sentinel KQL using pySigma's Kusto backend with the ``azure_monitor`` "
-    "pipeline. Returns the generated KQL, the inferred target Log Analytics "
+    "pipeline. Every query starts with a ``//`` provenance comment naming the "
+    "server version, the threat-model reference, and the Sigma rule ``id``. "
+    "Returns the generated KQL, the inferred target Log Analytics "
     "table(s) (``SecurityEvent``, ``SigninLogs``, etc.), and any pySigma "
     "conversion warnings. Pure function — no Azure authentication or network "
     "call is required. The pipeline auto-detects the table for Windows "
@@ -111,6 +113,7 @@ async def run(ctx: ToolContext, raw_params: dict[str, Any]) -> dict[str, Any]:
                 {
                     "kql": item.kql,
                     "target_table": item.target_table,
+                    "sigma_id": item.sigma_id,
                     "warnings": item.warnings,
                 }
                 for item in results

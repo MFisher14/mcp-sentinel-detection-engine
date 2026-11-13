@@ -525,6 +525,55 @@ Two passphrase patterns are supported per tenant; pick **one**:
 - **`cert_passphrase`** — inline literal. Convenient with `sops`/`age`
   but emits a warning to the audit log. Don't commit it.
 
+### Transport: stdio (default) or HTTP
+
+stdio is the default and needs no extra configuration. For remote
+clients (a shared internal MCP gateway, a CI runner, Claude on a
+different host than the credentials), start the server with the
+**Streamable HTTP** transport. Responses stream over SSE, and the
+endpoint is `/mcp`:
+
+```bash
+# 1. A shared HS256 secret (>= 32 bytes, chmod 0600).
+python -c "import secrets; print(secrets.token_urlsafe(48))" > ~/.config/mcp-sentinel/http-secret
+chmod 600 ~/.config/mcp-sentinel/http-secret
+
+# 2. Start the server. Auth is mandatory; there is no unauthenticated HTTP mode.
+export MCP_SENTINEL_HTTP_AUTH_SECRET_FILE=~/.config/mcp-sentinel/http-secret
+export MCP_SENTINEL_HTTP_AUTH_ISSUER=https://mcp-gateway.internal
+export MCP_SENTINEL_HTTP_AUTH_AUDIENCE=mcp-sentinel-detection-engine/prod-1
+mcp-sentinel-detection-engine --transport http --host 127.0.0.1 --port 8765
+
+# 3. Mint a short-lived token (reference minter; production tokens come from your IdP/gateway).
+python examples/mint_http_token.py --secret-file ~/.config/mcp-sentinel/http-secret \
+  --issuer https://mcp-gateway.internal --audience mcp-sentinel-detection-engine/prod-1
+
+# 4. Connect, e.g. from Claude Code:
+claude mcp add --transport http sentinel http://127.0.0.1:8765/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+| Variable / flag                              | Default     | Description                                                                 |
+| -------------------------------------------- | ----------- | --------------------------------------------------------------------------- |
+| `--transport` / `MCP_SENTINEL_TRANSPORT`     | `stdio`     | `stdio` or `http`.                                                          |
+| `--host` / `MCP_SENTINEL_HTTP_HOST`          | `127.0.0.1` | Bind address. Non-loopback without TLS logs a warning.                      |
+| `--port` / `MCP_SENTINEL_HTTP_PORT`          | `8765`      | Bind port.                                                                  |
+| `MCP_SENTINEL_HTTP_AUTH_SECRET_FILE`         | —           | HS256 shared secret file (0600, >= 32 bytes). One of this or the next.     |
+| `MCP_SENTINEL_HTTP_AUTH_PUBLIC_KEY_FILE`     | —           | PEM public key for RS256/ES256 tokens minted by an external IdP.           |
+| `MCP_SENTINEL_HTTP_AUTH_ISSUER`              | —           | Required `iss` claim.                                                       |
+| `MCP_SENTINEL_HTTP_AUTH_AUDIENCE`            | —           | Required `aud` claim. Make it unique per server instance.                  |
+| `MCP_SENTINEL_HTTP_AUTH_MAX_TTL_SECONDS`     | `900`       | Longest token lifetime (`exp - iat`) accepted.                              |
+| `MCP_SENTINEL_HTTP_AUTH_SINGLE_USE`          | off         | Reject any reused `jti`. Only for clients that mint a token per request.   |
+| `MCP_SENTINEL_HTTP_TLS_CERT` / `_TLS_KEY`    | —           | Serve TLS directly. Otherwise, terminate TLS in front.                      |
+| `MCP_SENTINEL_HTTP_ALLOWED_HOSTS`            | bind host   | Comma-separated `Host` header allow-list (DNS-rebinding protection).        |
+
+Tokens must carry `iss`, `aud`, `iat`, `exp`, and `jti`. A request that is
+missing a token, or whose token is expired, too long-lived, issued in the
+future, signed with the wrong key, or for the wrong issuer/audience, gets
+`401`. The audit log records the reason code and never the token. Every
+audit line carries a `transport` field (`stdio` / `http`). See
+[`THREAT_MODEL.md`](THREAT_MODEL.md) A4 / T8.
+
 ### Claude Desktop / Claude Code
 
 Add to your MCP client's config (Claude Desktop:
@@ -683,7 +732,6 @@ intentionally includes:
   investigation rather than rule authoring. The two servers compose:
   hunt in Defender XDR, then ship a Sigma rule via this server.
 - Detection-as-code Git workflow integration (`v0.3`).
-- HTTP/SSE transport (`v0.3`); v0.2 is stdio-only.
 
 Keeping the LLM-facing surface read-only against Azure means a
 compromise of the model or its prompt cannot cause state changes in

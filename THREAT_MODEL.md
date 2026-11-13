@@ -53,6 +53,11 @@ omitted in favor of specifics.
   data.** Cannot call the server directly, but their command lines,
   file names, sign-in user agents, and email subjects show up *inside*
   `dry_run_kql` results and can attempt indirect prompt injection.
+- **A4 — A remote network attacker** *(HTTP transport only)*. Can
+  reach the HTTP port but holds no valid token. May try to call tools
+  unauthenticated, replay or forge tokens, use DNS rebinding from a
+  browser, or sniff plaintext traffic. Not present with the default
+  stdio transport.
 - **A3 — A co-tenant of the host machine.** Could read process
   environment or attach to the process to steal the certificate
   passphrase, the PFX bytes, or the access token. Mitigations are
@@ -427,6 +432,60 @@ operator should still monitor the audit stream.
 
 ---
 
+## T8 — Transport-layer attacks on the HTTP transport *(A4)*
+
+**Scenario.** With `--transport http`, anyone who can reach the port can
+send MCP requests. Unlike Defender XDR, this server has two damage
+vectors behind that port: read (`dry_run_kql` and live schema against the
+workspace) and *effective* write (HCL from `generate_sentinel_terraform`
+that a downstream apply pipeline may deploy). An attacker may send
+unauthenticated requests, forge tokens (`alg: none`, HS/RS algorithm
+confusion), replay a captured token, present a long-lived token, rebind
+DNS from a victim's browser, or sniff a plaintext connection.
+
+**Mitigations.**
+
+1. **No unauthenticated mode.** The server refuses to start in HTTP mode
+   unless a signing key, `iss`, and `aud` are configured
+   (`BearerTokenValidator.from_env`). `BearerAuthMiddleware` checks every
+   request before it reaches the MCP session manager. Tested
+   (`test_http_rejects_unauthenticated_and_does_not_echo_token`).
+2. **Fixed algorithm list per key type.** An HS256 secret accepts only
+   HS256. A public key accepts only RS256/ES256 and is refused if the file
+   contains a private key. `alg: none` and HS256-signed-with-public-key
+   tokens are rejected. Tested (`test_alg_none_rejected`,
+   `test_rs256_public_key`).
+3. **Short-lived, instance-bound tokens.** `iss`, `aud`, `iat`, `exp`,
+   and `jti` are required. `exp - iat` may not exceed 15 minutes by
+   default. Tokens issued in the future are rejected. A unique `aud` per
+   server instance stops a token minted for one instance from working on
+   another.
+4. **Replay.** The short TTL bounds the replay window by default. With
+   `MCP_SENTINEL_HTTP_AUTH_SINGLE_USE=1`, every `jti` is accepted exactly
+   once (seen-set pruned at expiry). Tested
+   (`test_single_use_rejects_replay`).
+5. **No token echo.** Rejections return a generic `401` with
+   `WWW-Authenticate: Bearer error="invalid_token"`. The audit line
+   records a reason code (`expired`, `wrong_audience`, ...) and the
+   client host, never the token.
+6. **DNS-rebinding protection.** The MCP SDK's
+   `TransportSecuritySettings` allow-list rejects unexpected `Host`
+   headers and all browser `Origin`s. Tested
+   (`test_http_rejects_dns_rebinding_host`).
+7. **Loopback by default, TLS supported.** The default bind is
+   `127.0.0.1`. Binding a non-loopback address without
+   `MCP_SENTINEL_HTTP_TLS_CERT` logs `http-transport-plaintext-non-loopback`.
+8. **Shared secret hygiene.** The HS256 secret file must be `0600` and
+   at least 32 bytes.
+
+**Residual risk.** Any holder of a valid token can use every tool for the
+token's lifetime. There are no per-tool scopes yet. Without single-use
+mode, a captured token can be replayed within its TTL, so TLS is required
+for any non-loopback deployment. Per-tenant rate limits (T7) still apply
+to HTTP callers.
+
+---
+
 ## Non-goals
 
 - **PII scrubbing inside returned rows.** The server returns whatever
@@ -438,8 +497,8 @@ operator should still monitor the audit stream.
   need per-user RBAC should layer it in front of the MCP client, not
   inside the server.
 - **End-to-end encryption of stdio.** stdio is a process-local pipe;
-  if the threat model requires network-layer crypto, use HTTP/SSE
-  transport (planned v0.2) over TLS.
+  if the threat model requires network-layer crypto, use the HTTP
+  transport over TLS (T8).
 - **Write-scope rule deployment.** Emission only. The apply step,
   with its write credentials and `terraform plan` review gate, lives
   in a separate pipeline that this server never touches.

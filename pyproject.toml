@@ -35,6 +35,11 @@ dependencies = [
     "pydantic>=2.0.0",
     "pysigma>=1.0.0,<2.0.0",
     "pysigma-backend-kusto>=1.0.0,<2.0.0",
+    # HTTP transport (#2/#3). All three already ship as dependencies of `mcp`;
+    # declared explicitly because we import them directly.
+    "pyjwt[crypto]>=2.8.0",
+    "starlette>=0.27",
+    "uvicorn>=0.23",
 ]
 
 [project.optional-dependencies]
@@ -106,7 +111,7 @@ module = ["msal.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["mcp.*"]
+module = ["mcp.*", "uvicorn.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

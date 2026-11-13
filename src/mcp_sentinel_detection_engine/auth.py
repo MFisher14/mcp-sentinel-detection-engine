@@ -370,7 +370,9 @@ _SecretStoreParser = Callable[[str, dict[str, Any], dict[str, str]], PfxSource]
 
 
 def _secret_store_parsers() -> dict[str, _SecretStoreParser]:
-    return {}
+    from .credentials.keyvault import parse_key_vault_block
+
+    return {"key_vault": parse_key_vault_block}
 
 
 def _parse_certificate_source(

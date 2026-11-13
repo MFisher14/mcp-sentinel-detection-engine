@@ -9,6 +9,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
+import httpx
+
 from ..audit import audit, audit_error
 from ..errors import AuthError
 
@@ -88,6 +90,11 @@ class CachingPfxSource:
             self._value = value
             self._fetched_at = now
             return value
+
+
+def new_http_client() -> httpx.Client:
+    """Sync client for secret-store calls (also the seam tests patch)."""
+    return httpx.Client(timeout=DEFAULT_HTTP_TIMEOUT_SECONDS)
 
 
 def require_str(block: dict[str, Any], field: str, *, context: str) -> str:

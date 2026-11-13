@@ -51,6 +51,19 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `(tenant, scope)` for the Log Analytics and `management.azure.com` scopes.
 - `THREAT_MODEL.md` T9 (management-plane scope) and T10 (`terraform_plan`
   subprocess and state isolation).
+- `CredentialProvider.get_pfx_bytes()` lets a provider supply the App
+  Registration PFX from memory instead of `cert_path` (#9).
+  `AzureCredentials.cert_path` is now optional for such tenants.
+- Azure Key Vault certificate source. A `key_vault` block per tenant in the
+  tenants JSON, with a managed-identity or separate-App-Registration
+  bootstrap identity (#10).
+- HashiCorp Vault KV-v2 certificate source. A `vault` block per tenant,
+  with token (optionally response-wrapped), AppRole, or Kubernetes auth
+  and automatic `renew-self` (#11).
+- Certificate rotation: secret-store PFXs are re-fetched hourly and the
+  MSAL app is rebuilt when the certificate changes.
+- `THREAT_MODEL.md` T11 covers secret-store retrieval and the
+  bootstrap-identity boundary.
 
 ## [0.2.0] - 2026-09-05
 

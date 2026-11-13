@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -18,6 +19,7 @@ from typing import Any, Protocol
 import msal
 
 from .audit import audit
+from .credentials import CachingPfxSource, PfxSource, pfx_to_msal_credential
 from .errors import AuthError
 from .ratelimit import RateLimitConfig, parse_rate_limits
 
@@ -93,7 +95,9 @@ class AzureCredentials:
 
     tenant_id: str
     client_id: str
-    cert_path: str
+    # ``None`` when the provider materializes the PFX from a secret store via
+    # ``CredentialProvider.get_pfx_bytes`` instead of the filesystem.
+    cert_path: str | None
     workspace_id: str
     cert_passphrase: str | None = None
     management: ManagementTarget | None = None
@@ -117,6 +121,17 @@ class CredentialProvider(ABC):
 
     @abstractmethod
     def get_credentials(self, tenant_key: str = DEFAULT_TENANT_KEY) -> AzureCredentials: ...
+
+    def get_pfx_bytes(self, tenant_key: str = DEFAULT_TENANT_KEY) -> bytes | None:
+        """Return raw PFX bytes for ``tenant_key``, or ``None`` to use ``cert_path``.
+
+        Filesystem-backed providers keep this default. Secret-store providers
+        (Key Vault, HashiCorp Vault, ...) override it so the certificate never
+        has to exist on the host filesystem. Returned bytes are an
+        *unencrypted* PFX unless ``AzureCredentials.cert_passphrase`` is set.
+        """
+        del tenant_key
+        return None
 
     def list_tenants(self) -> list[str]:
         return [DEFAULT_TENANT_KEY]
@@ -213,7 +228,7 @@ class JsonFileCredentialProvider(CredentialProvider):
         except json.JSONDecodeError as exc:
             raise AuthError(f"Tenants config is not valid JSON: {self._path}") from exc
 
-        self._default_tenant, self._tenants = self._parse(data, env_source)
+        self._default_tenant, self._tenants, self._sources = self._parse(data, env_source)
         self._rate_limits = parse_rate_limits(data["tenants"])
 
     @staticmethod
@@ -230,7 +245,9 @@ class JsonFileCredentialProvider(CredentialProvider):
             )
 
     @staticmethod
-    def _parse(data: Any, env_source: dict[str, str]) -> tuple[str, dict[str, AzureCredentials]]:
+    def _parse(
+        data: Any, env_source: dict[str, str]
+    ) -> tuple[str, dict[str, AzureCredentials], dict[str, CachingPfxSource]]:
         if not isinstance(data, dict):
             raise AuthError("Tenants config root must be a JSON object")
         tenants_raw = data.get("tenants")
@@ -238,6 +255,7 @@ class JsonFileCredentialProvider(CredentialProvider):
             raise AuthError("Tenants config must contain a non-empty 'tenants' object")
 
         parsed: dict[str, AzureCredentials] = {}
+        sources: dict[str, CachingPfxSource] = {}
         for key, entry in tenants_raw.items():
             if not isinstance(key, str) or not _TENANT_KEY_RE.match(key):
                 raise AuthError(
@@ -247,21 +265,29 @@ class JsonFileCredentialProvider(CredentialProvider):
                 raise AuthError(f"Tenant entry must be an object: '{key}'")
             tenant_id = entry.get("tenant_id")
             client_id = entry.get("client_id")
-            cert_path = entry.get("cert_path")
             workspace_id_raw = entry.get("workspace_id")
             if not (
                 isinstance(tenant_id, str)
                 and isinstance(client_id, str)
-                and isinstance(cert_path, str)
                 and isinstance(workspace_id_raw, str)
             ):
                 raise AuthError(
                     f"Tenant '{key}' missing required string fields "
-                    "(tenant_id, client_id, cert_path, workspace_id)"
+                    "(tenant_id, client_id, workspace_id)"
                 )
-            _require_pfx_readable(cert_path, source=f"tenant '{key}'")
+            cert_path, source = _parse_certificate_source(key, entry, env_source)
+            passphrase: str | None
+            if source is not None:
+                if "cert_passphrase" in entry or "cert_passphrase_env" in entry:
+                    raise AuthError(
+                        f"Tenant '{key}' uses a secret-store certificate; configure the "
+                        "passphrase inside that block, not cert_passphrase(_env)."
+                    )
+                sources[key] = CachingPfxSource(source, tenant_key=key)
+                passphrase = None
+            else:
+                passphrase = JsonFileCredentialProvider._resolve_passphrase(key, entry, env_source)
             workspace_id = _validate_workspace_id(workspace_id_raw, source=f"tenant '{key}'")
-            passphrase = JsonFileCredentialProvider._resolve_passphrase(key, entry, env_source)
             management = _parse_management_target(
                 entry.get("subscription_id"),
                 entry.get("resource_group"),
@@ -280,7 +306,7 @@ class JsonFileCredentialProvider(CredentialProvider):
         default_key = data.get("default")
         if not isinstance(default_key, str) or default_key not in parsed:
             raise AuthError("Tenants config 'default' must name an existing tenant key")
-        return default_key, parsed
+        return default_key, parsed, sources
 
     @staticmethod
     def _resolve_passphrase(
@@ -317,6 +343,13 @@ class JsonFileCredentialProvider(CredentialProvider):
             raise AuthError("Unknown tenant")
         return creds
 
+    def get_pfx_bytes(self, tenant_key: str = DEFAULT_TENANT_KEY) -> bytes | None:
+        resolved = self._default_tenant if tenant_key == DEFAULT_TENANT_KEY else tenant_key
+        if resolved not in self._tenants:
+            raise AuthError("Unknown tenant")
+        source = self._sources.get(resolved)
+        return None if source is None else source.get()
+
     def list_tenants(self) -> list[str]:
         return sorted(self._tenants.keys())
 
@@ -326,6 +359,46 @@ class JsonFileCredentialProvider(CredentialProvider):
     @property
     def default_tenant_key(self) -> str:
         return self._default_tenant
+
+
+# Per-tenant certificate-source blocks recognised in the tenants JSON, in
+# addition to ``cert_path``. Each parser lives in ``credentials/``, validates
+# its block at load time, and returns a *lazy* PfxSource — nothing is fetched
+# until the first token acquisition, so a transient secret-store outage does
+# not stop the server (or the offline tools) from booting.
+_SecretStoreParser = Callable[[str, dict[str, Any], dict[str, str]], PfxSource]
+
+
+def _secret_store_parsers() -> dict[str, _SecretStoreParser]:
+    from .credentials.hashicorp_vault import parse_vault_block
+    from .credentials.keyvault import parse_key_vault_block
+
+    return {"key_vault": parse_key_vault_block, "vault": parse_vault_block}
+
+
+def _parse_certificate_source(
+    tenant_key: str, entry: dict[str, Any], env_source: dict[str, str]
+) -> tuple[str | None, PfxSource | None]:
+    """Return ``(cert_path, secret_store_source)`` — exactly one is non-``None``."""
+    parsers = _secret_store_parsers()
+    kinds = ("cert_path", *parsers)
+    present = [name for name in kinds if entry.get(name) is not None]
+    if len(present) != 1:
+        raise AuthError(
+            f"Tenant '{tenant_key}' must specify exactly one certificate source "
+            f"({', '.join(kinds)})"
+        )
+    kind = present[0]
+    if kind == "cert_path":
+        cert_path = entry["cert_path"]
+        if not isinstance(cert_path, str):
+            raise AuthError(f"Tenant '{tenant_key}' cert_path must be a string")
+        _require_pfx_readable(cert_path, source=f"tenant '{tenant_key}'")
+        return cert_path, None
+    block = entry[kind]
+    if not isinstance(block, dict):
+        raise AuthError(f"Tenant '{tenant_key}' {kind} must be an object")
+    return None, parsers[kind](tenant_key, block, env_source)
 
 
 class _MsalAppFactory(Protocol):
@@ -351,7 +424,15 @@ def _default_msal_factory(
     )
 
 
-def _build_client_credential(creds: AzureCredentials) -> dict[str, Any]:
+def _build_client_credential(
+    creds: AzureCredentials, pfx_bytes: bytes | None = None
+) -> dict[str, Any]:
+    if pfx_bytes is not None:
+        # MSAL only accepts a PFX by path; for in-memory bytes hand it the PEM
+        # key + certificate instead (it derives the thumbprints itself).
+        return pfx_to_msal_credential(pfx_bytes, creds.cert_passphrase)
+    if creds.cert_path is None:
+        raise AuthError("No certificate source is configured for this tenant")
     payload: dict[str, Any] = {"private_key_pfx_path": creds.cert_path}
     if creds.cert_passphrase is not None:
         payload["passphrase"] = creds.cert_passphrase
@@ -384,7 +465,9 @@ class TokenManager:
         self._msal_factory = msal_factory or _default_msal_factory
         self._time_source: Callable[[], float] = time_source or time.time
         self._cache: dict[tuple[str, str], _CachedToken] = {}
-        self._apps: dict[str, msal.ConfidentialClientApplication] = {}
+        # tenant_key -> (certificate fingerprint, MSAL app). The fingerprint lets
+        # a rotated secret-store certificate replace the cached app.
+        self._apps: dict[str, tuple[str, msal.ConfidentialClientApplication]] = {}
         self._lock = threading.Lock()
 
     @property
@@ -430,14 +513,24 @@ class TokenManager:
 
     def _acquire(self, tenant_key: str, scope: str) -> _CachedToken:
         credentials = self._credential_provider.get_credentials(tenant_key)
-        app = self._apps.get(tenant_key)
-        if app is None:
+        pfx_bytes = self._credential_provider.get_pfx_bytes(tenant_key)
+        fingerprint = (
+            hashlib.sha256(pfx_bytes).hexdigest()
+            if pfx_bytes is not None
+            else f"path:{credentials.cert_path}"
+        )
+        cached_app = self._apps.get(tenant_key)
+        if cached_app is not None and cached_app[0] == fingerprint:
+            app = cached_app[1]
+        else:
+            if cached_app is not None:
+                audit("certificate-rotated", tenant=tenant_key)
             app = self._msal_factory(
                 client_id=credentials.client_id,
                 authority=credentials.authority,
-                client_credential=_build_client_credential(credentials),
+                client_credential=_build_client_credential(credentials, pfx_bytes),
             )
-            self._apps[tenant_key] = app
+            self._apps[tenant_key] = (fingerprint, app)
 
         result = app.acquire_token_for_client(scopes=[scope])
 
@@ -480,6 +573,11 @@ class LazyCredentialProvider(CredentialProvider):
 
     def get_credentials(self, tenant_key: str = DEFAULT_TENANT_KEY) -> AzureCredentials:
         return self._provider().get_credentials(tenant_key)
+
+    def get_pfx_bytes(self, tenant_key: str = DEFAULT_TENANT_KEY) -> bytes | None:
+        # Must delegate: without this, a Key Vault / Vault tenant behind the
+        # production LazyCredentialProvider would fall back to cert_path=None.
+        return self._provider().get_pfx_bytes(tenant_key)
 
     def list_tenants(self) -> list[str]:
         return self._provider().list_tenants()

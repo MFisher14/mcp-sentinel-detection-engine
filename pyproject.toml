@@ -69,6 +69,8 @@ packages = ["src/mcp_sentinel_detection_engine"]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
+# One-off recording helpers; run from a throwaway venv, not part of the package.
+extend-exclude = ["docs/demo/tools"]
 
 [tool.ruff.lint]
 select = [

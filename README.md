@@ -11,31 +11,23 @@
 > [GitHub Milestones](https://github.com/MFisher14/mcp-sentinel-detection-engine/milestones)
 > for the v0.3 / v0.4 plan.
 
-<!-- DEMO ASSET GOES HERE.
-     Record it with docs/demo/README.md, commit the GIF to
-     docs/demo/sentinel-detection-loop.gif, then delete this comment and
-     uncomment the block below. It is left commented so the README never
-     renders a broken image while the asset is unrecorded.
-
 ## Demo
 
-![Claude Desktop driving convert_sigma_to_kql, validate_kql_against_schema, and generate_sentinel_terraform against a bundled Sigma rule, with no Azure credentials configured](docs/demo/sentinel-detection-loop.gif)
+![Claude Code driving convert_sigma_to_kql, validate_kql_against_schema, dry_run_kql, and generate_sentinel_terraform against a bundled Sigma rule](docs/demo/sentinel-pipeline.gif)
 
-*Sigma → KQL → schema validation → Terraform, driven from Claude Desktop
-against the bundled `examples/sigma/failed_logon_burst.yml`.
-`validate_kql_against_schema` catches the misspelled `LogonTpye` and
-proposes `LogonType` offline; `generate_sentinel_terraform` emits the
-`azurerm_sentinel_alert_rule_scheduled` block. **No Azure credentials** —
-three of the four tools are pure functions. Reproduce it with
-[the recording script](docs/demo/README.md).*
-
--->
+*One prompt in Claude Code drives all four tools against the bundled
+`examples/sigma/failed_logon_burst.yml`: Sigma → KQL → schema
+validation → dry-run → Terraform. The dry-run hits a mocked Log
+Analytics workspace with placeholder IDs; no real credentials are
+involved. See [`docs/demo/`](docs/demo/README.md) for the
+[asciicast](docs/demo/sentinel-pipeline.cast) and how it was recorded.*
 
 ## Table of contents
 
-<!-- - [Demo](#demo)  ← uncomment together with the demo block above -->
+- [Demo](#demo)
 - [Why an MCP server, not just a CLI?](#why-an-mcp-server-not-just-a-cli)
 - [Quickstart (offline)](#quickstart-offline)
+  - [What it looks like in Claude](#what-it-looks-like-in-claude)
 - [Tools](#tools)
 - [Prerequisites (Azure — required only for live query execution)](#prerequisites-azure--required-only-for-live-query-execution)
 - [Installation](#installation)
@@ -114,6 +106,22 @@ Point Claude Desktop at the server using the no-credentials snippet in
 [`examples/README.md`](examples/README.md), restart the client, and run
 any of the bundled demo prompts — the five rows in that file cover all
 four tools end-to-end against the seven example rules in `examples/sigma/`.
+
+### What it looks like in Claude
+
+Claude reads the rule, converts it, and checks the KQL's columns. The
+provenance header and Sigma id travel with the query:
+
+![convert_sigma_to_kql and validate_kql_against_schema in Claude Code](docs/demo/convert-and-validate.png)
+
+Claude then emits the Terraform rule with ATT&CK tactics and techniques:
+
+![generate_sentinel_terraform in Claude Code](docs/demo/generate-terraform.png)
+
+Claude's summary covers all four steps, including the dry-run rows, and
+flags a gap between the rule's description and its query:
+
+![Claude's summary after all four tool calls](docs/demo/summary.png)
 
 ---
 

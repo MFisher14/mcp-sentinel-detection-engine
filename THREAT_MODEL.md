@@ -283,7 +283,11 @@ address so the apply *overwrites* a previously-deployed rule's GUID.
 5. **Heredoc-safe query body.** The KQL is wrapped in a `<<-EOT ...
    EOT` heredoc, and the marker is automatically extended (`EOTX`,
    `EOTXX`, ...) if `EOT` appears in the query — a caller cannot break
-   out of the heredoc.
+   out of the heredoc. HCL heredocs are templates, so `${` and `%{`
+   inside the query body are escaped to `$${` / `%%{` exactly as in
+   quoted strings; a query containing `${file("/etc/passwd")}` is
+   emitted as an inert literal. Tested
+   (`test_heredoc_query_template_sequences_are_escaped`).
 
 **Residual risk.** This server emits HCL; it does not apply it. A
 sufficiently broken apply pipeline (running with `Owner` rights, or
